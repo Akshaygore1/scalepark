@@ -546,6 +546,17 @@ button {
   font-size: 9px;
   line-height: 1.45;
 }
+.attempt-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid #eee8d4;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+}
 .scorecard {
   margin-top: 12px;
   padding-top: 10px;
@@ -583,6 +594,47 @@ button {
 }
 .score-penalty b {
   color: #9a422d;
+}
+.hint-panel {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.hint-panel article {
+  padding: 7px;
+  border-left: 2px solid #b8a978;
+  background: white;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.hint-panel article p {
+  margin: 3px 0 0;
+  color: var(--ink-soft);
+}
+.hint-panel .retry-attempt {
+  border-color: #b8a978;
+  background: white;
+  color: var(--ink);
+}
+.attempt-history {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.attempt-history button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  border-color: #d8cead;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.attempt-history time {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
 }
 .learning-mode-heading,
 .learning-actions,

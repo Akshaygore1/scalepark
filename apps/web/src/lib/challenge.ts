@@ -57,7 +57,7 @@ export type ScoreFactor = {
 export type ChallengeScore = {
   total: number;
   factors: ScoreFactor[];
-  penalties: { overprovisioning: number };
+  penalties: { overprovisioning: number; hints: number };
   estimatedCost: number;
   disclaimer: string;
 };
@@ -163,10 +163,20 @@ export function scoreChallenge(
   return {
     total: Math.round(clamp(factorTotal - overprovisioning, 0, 1000)),
     factors,
-    penalties: { overprovisioning },
+    penalties: { overprovisioning, hints: 0 },
     estimatedCost: Number((hourlyCosts.reduce((total, cost) => total + cost, 0) / 3600).toFixed(2)),
     disclaimer:
       "Provider-neutral educational estimate based on active components and simulated runtime; not a current cloud quote.",
+  };
+}
+
+export function applyHintPenalty(score: ChallengeScore, hintPenalty: number): ChallengeScore {
+  const hints = Math.max(0, hintPenalty);
+  const factorTotal = score.factors.reduce((total, factor) => total + factor.earned, 0);
+  return {
+    ...score,
+    total: Math.max(0, factorTotal - score.penalties.overprovisioning - hints),
+    penalties: { ...score.penalties, hints },
   };
 }
 

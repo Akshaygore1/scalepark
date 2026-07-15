@@ -18,19 +18,30 @@ import {
   type ComponentType,
   type Region,
 } from "@/lib/architecture";
+import {
+  createAttempt,
+  emptyAttemptHistory,
+  recordAttempt,
+  requestNextHint,
+  restoreAttemptHistory,
+  saveAttemptHistory,
+  type Attempt,
+  type HintLevel,
+} from "@/lib/attempts";
 import { initialLearningState, learningScenario, reduceLearningState } from "@/lib/learning";
 import {
   SCORED_CHALLENGE_SEED,
   scoreChallenge,
   scoredChallengeCommands,
   scoredChallengeScenario,
-  type ChallengeScore,
 } from "@/lib/challenge";
 import type { Scenario, SimulationCommand, SimulationResult, Snapshot } from "@/lib/simulation";
 import { explainFailure, runSimulation, starterScenario } from "@/lib/simulation";
 
 type RunMode = "sandbox" | "scored";
-type RunContext = { mode: "sandbox" } | { mode: "scored"; architecture: Architecture };
+type RunContext =
+  | { mode: "sandbox" }
+  | { mode: "scored"; architecture: Architecture; requestedHints: HintLevel[] };
 type WorkerRequest = {
   architecture: Architecture;
   scenario: Scenario;
@@ -72,7 +83,12 @@ export function ArchitectureEditor() {
   >("none");
   const [learning, dispatchLearning] = useReducer(reduceLearningState, initialLearningState);
   const [activeRun, setActiveRun] = useState<"idle" | RunMode>("idle");
-  const [challengeScore, setChallengeScore] = useState<ChallengeScore | null>(null);
+  const [attemptHistory, setAttemptHistory] = useState(emptyAttemptHistory);
+  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
+  const [pendingHints, setPendingHints] = useState<HintLevel[]>([]);
+  const selectedAttempt =
+    attemptHistory.attempts.find((attempt) => attempt.id === selectedAttemptId) ??
+    attemptHistory.attempts[0];
   const selected = architecture.nodes.find((node) => node.id === selectedId);
   const validation = useMemo(() => validateArchitecture(architecture), [architecture]);
   const activeRegions = useMemo(() => routedRegions(architecture), [architecture]);
@@ -106,6 +122,12 @@ export function ArchitectureEditor() {
   }, [architecture]);
 
   useEffect(() => {
+    const restored = restoreAttemptHistory(window.localStorage);
+    setAttemptHistory(restored);
+    setPendingHints(restored.attempts[0]?.requestedHints ?? []);
+  }, []);
+
+  useEffect(() => {
     worker.current = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
       type: "module",
     });
@@ -123,7 +145,20 @@ export function ArchitectureEditor() {
       const completedRun = runContext.current;
       runContext.current = null;
       if (completedRun?.mode === "scored") {
-        setChallengeScore(scoreChallenge(event.data.result, completedRun.architecture));
+        const score = scoreChallenge(event.data.result, completedRun.architecture);
+        const attempt = createAttempt({
+          id: crypto.randomUUID(),
+          completedAt: new Date().toISOString(),
+          architecture: completedRun.architecture,
+          result: { simulation: event.data.result, score, seed: SCORED_CHALLENGE_SEED },
+          requestedHints: completedRun.requestedHints,
+        });
+        setAttemptHistory((current) => {
+          const next = recordAttempt(current, attempt);
+          saveAttemptHistory(window.localStorage, next);
+          return next;
+        });
+        setSelectedAttemptId(attempt.id);
         setNotice("Scored attempt complete. Review the factor breakdown and replay evidence.");
         return;
       }
@@ -340,9 +375,9 @@ export function ArchitectureEditor() {
   function runScoredDesign() {
     if (!validation.runnable) return setNotice(validation.errors[0]);
     const frozenArchitecture = structuredClone(architecture);
-    setChallengeScore(null);
+    setSelectedAttemptId(null);
     launchRun(
-      { mode: "scored", architecture: frozenArchitecture },
+      { mode: "scored", architecture: frozenArchitecture, requestedHints: pendingHints },
       {
         architecture: frozenArchitecture,
         scenario: scoredChallengeScenario,
@@ -361,6 +396,44 @@ export function ArchitectureEditor() {
     setReplaySecond(null);
     setNotice(message);
     worker.current?.postMessage(request);
+  }
+
+  function updateAttempt(attempt: Attempt) {
+    setAttemptHistory((current) => {
+      const next = recordAttempt(current, attempt);
+      saveAttemptHistory(window.localStorage, next);
+      return next;
+    });
+    setSelectedAttemptId(attempt.id);
+  }
+
+  function requestHint() {
+    if (!selectedAttempt) return;
+    const updated = requestNextHint(selectedAttempt);
+    updateAttempt(updated);
+    setPendingHints(updated.requestedHints);
+  }
+
+  function retryAttempt() {
+    if (!selectedAttempt) return;
+    restoreAttempt(selectedAttempt);
+    setPendingHints(selectedAttempt.requestedHints);
+    setNotice("Failed architecture restored. Make a bounded change, then start a new attempt.");
+  }
+
+  function selectAttempt(attempt: Attempt) {
+    restoreAttempt(attempt);
+    setSelectedAttemptId(attempt.id);
+    setPendingHints(attempt.requestedHints);
+    setNotice("Saved attempt architecture and replay restored from this browser.");
+  }
+
+  function restoreAttempt(attempt: Attempt) {
+    const restored = structuredClone(attempt.architecture);
+    setArchitecture(restored);
+    setSelectedId(restored.nodes[0]?.id ?? "");
+    setSimulation(attempt.replay);
+    setReplaySecond(attempt.replay.snapshots.at(-1)?.second ?? null);
   }
 
   return (
@@ -858,9 +931,13 @@ export function ArchitectureEditor() {
           </ul>
         )}
         <ScoredChallengePanel
+          attempt={selectedAttempt}
           canStart={validation.runnable && learning.phase === "idle" && activeRun === "idle"}
+          history={attemptHistory}
+          onHint={requestHint}
+          onRetry={retryAttempt}
+          onSelectAttempt={selectAttempt}
           running={activeRun === "scored"}
-          score={challengeScore}
           onStart={runScoredDesign}
         />
         <LearningModePanel

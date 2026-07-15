@@ -36,7 +36,7 @@ test("an ideal run earns every published score factor", () => {
     recovery: 150,
     cost: 200,
   });
-  assert.equal(ideal.penalties.overprovisioning, 0);
+  assert.deepEqual(ideal.penalties, { overprovisioning: 0, hints: 0 });
   assert.equal(ideal.total, 1000);
   assert.equal(ideal.estimatedCost, 0.02);
 });
