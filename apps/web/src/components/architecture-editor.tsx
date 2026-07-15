@@ -1,5 +1,7 @@
 import { Copy, Download, Link2, Play, Plus, Trash2, Upload } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+
+import { LearningModePanel } from "./learning-mode-panel";
 
 import {
   componentTypes,
@@ -15,8 +17,13 @@ import {
   type ComponentType,
   type Region,
 } from "@/lib/architecture";
+import {
+  initialLearningState,
+  learningScenario,
+  reduceLearningState,
+} from "@/lib/learning";
 import type { SimulationCommand, SimulationResult, Snapshot } from "@/lib/simulation";
-import { explainFailure, starterScenario } from "@/lib/simulation";
+import { explainFailure, runSimulation, starterScenario } from "@/lib/simulation";
 
 const typeNames: Record<ComponentType, string> = {
   client: "Client",
@@ -46,16 +53,39 @@ export function ArchitectureEditor() {
   const [liveSnapshot, setLiveSnapshot] = useState<Snapshot | null>(null);
   const [replaySecond, setReplaySecond] = useState<number | null>(null);
   const [regionalIncident, setRegionalIncident] = useState<Region | "none">("none");
+  const [learningRegion, setLearningRegion] = useState<Region>("us-east");
   const [runtimeChange, setRuntimeChange] = useState<
     "none" | "add-replica" | "remove-replica" | "double-capacity"
   >("none");
+  const [learning, dispatchLearning] = useReducer(reduceLearningState, initialLearningState);
   const selected = architecture.nodes.find((node) => node.id === selectedId);
   const validation = useMemo(() => validateArchitecture(architecture), [architecture]);
   const activeRegions = useMemo(() => routedRegions(architecture), [architecture]);
   const replaySnapshot =
     simulation?.snapshots.find((snapshot) => snapshot.second === replaySecond) ??
     simulation?.snapshots.at(-1);
-  const displayedSnapshot = simulation ? replaySnapshot : liveSnapshot;
+  const learningResult = useMemo(
+    () =>
+      learning.baseArchitecture
+        ? runSimulation(
+            learning.baseArchitecture,
+            learningScenario(learning),
+            learning.commands,
+            1,
+          )
+        : null,
+    [learning],
+  );
+  const learningSnapshot = learningResult?.snapshots[learning.second];
+  const learningTraffic =
+    learning.commands
+      .filter(
+        (command): command is Extract<SimulationCommand, { type: "traffic" }> =>
+          command.type === "traffic" && command.atSecond <= learning.second,
+      )
+      .at(-1)?.rps ?? 500;
+  const displayedSnapshot =
+    learning.phase !== "idle" ? learningSnapshot : simulation ? replaySnapshot : liveSnapshot;
   const failure = simulation ? explainFailure(simulation) : null;
   const importInput = useRef<HTMLInputElement>(null);
   const worker = useRef<Worker | null>(null);
@@ -92,10 +122,54 @@ export function ArchitectureEditor() {
     return () => worker.current?.terminate();
   }, []);
 
+  useEffect(() => {
+    if (learning.phase !== "running") return;
+    const timer = window.setInterval(() => dispatchLearning({ type: "tick" }), 600);
+    return () => window.clearInterval(timer);
+  }, [learning.phase]);
+
+  useEffect(() => {
+    if (!activeRegions.includes(learningRegion) && activeRegions[0]) {
+      setLearningRegion(activeRegions[0]);
+    }
+  }, [activeRegions, learningRegion]);
+
   function updateNode(id: string, update: (node: ArchitectureNode) => ArchitectureNode) {
+    const currentNode = architecture.nodes.find((node) => node.id === id);
+    if (!currentNode) return;
+    const nextNode = update(currentNode);
+    if (learning.phase !== "idle") {
+      const replicaDelta = nextNode.config.replicas - currentNode.config.replicas;
+      if (replicaDelta !== 0) {
+        dispatchLearning({
+          type: "deployment",
+          command: {
+            type: "capacity",
+            nodeId: id,
+            replicaDelta,
+            deploymentDelaySeconds: Math.max(
+              1,
+              currentNode.config.autoscaling.startupDelaySeconds,
+            ),
+          },
+        });
+      }
+      const changes = changedRuntimeConfig(currentNode, nextNode);
+      if (Object.keys(changes).length > 0) {
+        dispatchLearning({
+          type: "deployment",
+          command: {
+            type: "configure",
+            nodeId: id,
+            changes,
+            deploymentDelaySeconds: 2,
+          },
+        });
+      }
+    }
     setArchitecture((current) => ({
       ...current,
-      nodes: current.nodes.map((node) => (node.id === id ? update(node) : node)),
+      nodes: current.nodes.map((node) => (node.id === id ? nextNode : node)),
     }));
   }
 
@@ -270,7 +344,13 @@ export function ArchitectureEditor() {
         <p className="panel-intro">Add supported infrastructure to the canvas.</p>
         <div className="palette-list">
           {componentTypes.map((type) => (
-            <button className="palette-item" key={type} type="button" onClick={() => addNode(type)}>
+            <button
+              className="palette-item"
+              key={type}
+              type="button"
+              disabled={learning.phase !== "idle"}
+              onClick={() => addNode(type)}
+            >
               {typeNames[type]} <Plus aria-hidden="true" size={15} />
             </button>
           ))}
@@ -283,7 +363,12 @@ export function ArchitectureEditor() {
             <p className="eyebrow">Architecture</p>
             <h2 id="architecture-title">Build a request path</h2>
           </div>
-          <button className="run-button" type="button" onClick={runDesign}>
+          <button
+            className="run-button"
+            type="button"
+            disabled={learning.phase !== "idle"}
+            onClick={runDesign}
+          >
             <Play aria-hidden="true" size={14} /> Validate & run
           </button>
         </div>
@@ -371,13 +456,25 @@ export function ArchitectureEditor() {
         {selected ? (
           <>
             <div className="inspector-actions">
-              <button type="button" onClick={() => setConnectionSource(selected.id)}>
+              <button
+                type="button"
+                disabled={learning.phase !== "idle"}
+                onClick={() => setConnectionSource(selected.id)}
+              >
                 <Link2 size={14} /> Connect
               </button>
-              <button type="button" onClick={duplicateSelected}>
+              <button
+                type="button"
+                disabled={learning.phase !== "idle"}
+                onClick={duplicateSelected}
+              >
                 <Copy size={14} /> Duplicate
               </button>
-              <button type="button" onClick={removeSelected}>
+              <button
+                type="button"
+                disabled={learning.phase !== "idle"}
+                onClick={removeSelected}
+              >
                 <Trash2 size={14} /> Remove
               </button>
             </div>
@@ -724,6 +821,38 @@ export function ArchitectureEditor() {
             ))}
           </ul>
         )}
+        <LearningModePanel
+          activeRegions={activeRegions}
+          canStart={validation.runnable}
+          dispatch={dispatchLearning}
+          learning={learning}
+          region={learningRegion}
+          result={learningResult}
+          snapshot={learningSnapshot}
+          traffic={learningTraffic}
+          onRegionChange={setLearningRegion}
+          onStart={() => {
+            if (!validation.runnable) {
+              setNotice(validation.errors[0]);
+              return;
+            }
+            setSimulation(null);
+            setLiveSnapshot(null);
+            dispatchLearning({ type: "start", architecture });
+            setNotice("Learning mode started. Pause whenever you want to inspect or edit.");
+          }}
+          onReset={() => {
+            dispatchLearning({ type: "reset" });
+            setNotice("Learning mode reset without changing your design.");
+          }}
+        >
+          {learningSnapshot && (
+            <>
+              <ScalingEvidence architecture={architecture} snapshot={learningSnapshot} />
+              <RoutingEvidence architecture={architecture} snapshot={learningSnapshot} />
+            </>
+          )}
+        </LearningModePanel>
         <label className="config-field incident-preset">
           Regional incident preset
           <select
@@ -1031,4 +1160,17 @@ function ScalingEvidence({
       </ul>
     </div>
   );
+}
+
+function changedRuntimeConfig(
+  current: ArchitectureNode,
+  next: ArchitectureNode,
+): Extract<SimulationCommand, { type: "configure" }>["changes"] {
+  const changes: Extract<SimulationCommand, { type: "configure" }>["changes"] = {};
+  for (const key of Object.keys(next.config) as Array<keyof ArchitectureNode["config"]>) {
+    if (key === "replicas") continue;
+    if (JSON.stringify(current.config[key]) === JSON.stringify(next.config[key])) continue;
+    Object.assign(changes, { [key]: structuredClone(next.config[key]) });
+  }
+  return changes;
 }

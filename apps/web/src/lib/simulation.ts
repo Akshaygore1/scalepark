@@ -43,7 +43,7 @@ export type SimulationCommand =
       atSecond: number;
       type: "configure";
       nodeId: string;
-      changes: Partial<Omit<ComponentConfig, "autoscaling" | "replicas">>;
+      changes: Partial<Omit<ComponentConfig, "replicas">>;
       deploymentDelaySeconds: number;
     }
   | {
@@ -65,7 +65,7 @@ export type PendingDeployment =
       kind: "configuration";
       nodeId: string;
       readyAtSecond: number;
-      changes: Partial<Omit<ComponentConfig, "autoscaling" | "replicas">>;
+      changes: Partial<Omit<ComponentConfig, "replicas">>;
       source: "runtime-edit";
     };
 export type SemanticHealth =
@@ -282,10 +282,12 @@ export function runSimulation(
             },
       );
     }
-    const trafficCommand = commands.find(
-      (item): item is Extract<SimulationCommand, { type: "traffic" }> =>
-        item.atSecond === second && item.type === "traffic",
-    );
+    const trafficCommand = commands
+      .filter(
+        (item): item is Extract<SimulationCommand, { type: "traffic" }> =>
+          item.atSecond <= second && item.type === "traffic",
+      )
+      .at(-1);
     const offered =
       (trafficCommand?.rps ??
         (second >= scenario.spikeAtSecond ? scenario.spikeRps : scenario.normalRps)) +

@@ -5,6 +5,7 @@
   "scripts": {
     "build": "react-router build",
     "start": "react-router-serve ./build/server/index.js",
+    "test:e2e": "playwright test",
     "typecheck": "react-router typegen && tsc",
     "dev:bare": "react-router dev"
   },
@@ -33,6 +34,7 @@
   },
   "devDependencies": {
     "@infraplay/config": "workspace:*",
+    "@playwright/test": "^1.61.1",
     "@react-router/dev": "^8.1.0",
     "@tailwindcss/vite": "^4.3.2",
     "@tanstack/react-query-devtools": "^5.101.2",

@@ -509,6 +509,62 @@ button {
 .config-toggle input {
   margin: 0;
 }
+.learning-mode {
+  margin: 16px 0;
+  padding: 11px;
+  border: 1px solid #9fb9a9;
+  background: #f5faf7;
+}
+.learning-mode-heading,
+.learning-actions,
+.incident-actions,
+.regional-injection {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.learning-mode-heading {
+  justify-content: space-between;
+}
+.learning-actions,
+.incident-actions {
+  flex-wrap: wrap;
+}
+.learning-mode button,
+.regional-injection select {
+  padding: 6px;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.learning-mode button:disabled {
+  opacity: 0.45;
+}
+.incident-actions,
+.regional-injection {
+  margin-top: 8px;
+}
+.regional-injection select {
+  min-width: 90px;
+}
+.learning-readout {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 10px;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.learning-readout span {
+  display: flex;
+  justify-content: space-between;
+}
+.learning-readout b {
+  color: var(--ink);
+}
 .validation-errors {
   margin: 15px 0 0;
   padding: 10px 10px 10px 24px;
