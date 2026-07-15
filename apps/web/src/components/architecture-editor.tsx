@@ -238,7 +238,7 @@ export function ArchitectureEditor() {
           </svg>
           {architecture.nodes.map((node) => (
             <button
-              className={`editor-node ${selectedId === node.id ? "editor-node-selected" : ""} ${connectionSource === node.id ? "editor-node-connecting" : ""} ${simulation?.firstSaturatedNodeId === node.id ? "editor-node-saturated" : ""}`}
+              className={`editor-node ${selectedId === node.id ? "editor-node-selected" : ""} ${connectionSource === node.id ? "editor-node-connecting" : ""} ${simulation?.firstSaturatedNodeId === node.id ? "editor-node-saturated" : ""} ${node.type === "cache" && replaySnapshot && replaySnapshot.cacheHealth !== "healthy" ? `editor-node-cache-${replaySnapshot.cacheHealth}` : ""}`}
               key={node.id}
               type="button"
               style={{ left: `${node.x}px`, top: `${node.y}px` }}
@@ -257,7 +257,10 @@ export function ArchitectureEditor() {
               }}
             >
               <span>{node.label}</span>
-              <small>×{node.config.replicas}</small>
+              <small>
+                ×{node.config.replicas}
+                {node.type === "cache" && replaySnapshot ? ` · ${replaySnapshot.cacheHealth}` : ""}
+              </small>
             </button>
           ))}
           <p className="canvas-notice" role="status">
@@ -347,6 +350,61 @@ export function ArchitectureEditor() {
               />
             </label>
             <label className="config-field">
+              Concurrency
+              <input
+                type="number"
+                min="1"
+                value={selected.config.concurrency}
+                onChange={(event) =>
+                  updateNode(selected.id, (node) => ({
+                    ...node,
+                    config: {
+                      ...node.config,
+                      concurrency: Math.max(1, Number(event.target.value)),
+                    },
+                  }))
+                }
+              />
+            </label>
+            {selected.type === "cache" && (
+              <>
+                <label className="config-field">
+                  Cache size (keys)
+                  <input
+                    type="number"
+                    min="1"
+                    value={selected.config.cacheSize}
+                    onChange={(event) =>
+                      updateNode(selected.id, (node) => ({
+                        ...node,
+                        config: {
+                          ...node.config,
+                          cacheSize: Math.max(1, Number(event.target.value)),
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label className="config-field">
+                  TTL (seconds)
+                  <input
+                    type="number"
+                    min="1"
+                    value={selected.config.ttlSeconds}
+                    onChange={(event) =>
+                      updateNode(selected.id, (node) => ({
+                        ...node,
+                        config: {
+                          ...node.config,
+                          ttlSeconds: Math.max(1, Number(event.target.value)),
+                        },
+                      }))
+                    }
+                  />
+                </label>
+              </>
+            )}
+            <label className="config-field">
               Region
               <select
                 value={selected.config.region}
@@ -424,6 +482,23 @@ export function ArchitectureEditor() {
                 <span>
                   Cost <b>${replaySnapshot.cost}/h</b>
                 </span>
+                <span>
+                  Cache hit <b>{(replaySnapshot.cacheHitRate * 100).toFixed(1)}%</b>
+                </span>
+                <span>
+                  Origin load <b>{replaySnapshot.originLoad.toLocaleString()}/s</b>
+                </span>
+                <span>
+                  Cache misses <b>{replaySnapshot.cacheMisses.toLocaleString()}</b>
+                </span>
+                <span>
+                  Evictions <b>{replaySnapshot.cacheEvictions.toLocaleString()}</b>
+                </span>
+                {replaySnapshot.hotKeyPressure > 0 && (
+                  <span>
+                    Hot-key pressure <b>{(replaySnapshot.hotKeyPressure * 100).toFixed(0)}%</b>
+                  </span>
+                )}
               </div>
             )}
             {failure && (
@@ -479,6 +554,22 @@ export function ArchitectureEditor() {
               </span>
               <span>
                 Queue <b>{liveSnapshot.queued.toLocaleString()}</b>
+              </span>
+              <span>
+                Cache hit <b>{(liveSnapshot.cacheHitRate * 100).toFixed(1)}%</b>
+              </span>
+              <span>
+                Origin load <b>{liveSnapshot.originLoad.toLocaleString()}/s</b>
+              </span>
+              <span>
+                Cache health <b>{liveSnapshot.cacheHealth}</b>
+              </span>
+              <span>
+                Misses / evictions{" "}
+                <b>
+                  {liveSnapshot.cacheMisses.toLocaleString()} /{" "}
+                  {liveSnapshot.cacheEvictions.toLocaleString()}
+                </b>
               </span>
             </div>
           </section>

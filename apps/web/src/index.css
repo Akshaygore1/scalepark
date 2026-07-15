@@ -296,6 +296,15 @@ button {
   border-color: #c47623;
   box-shadow: 0 0 0 3px #fff0d5;
 }
+.editor-node-cache-hot {
+  border-color: #c47623;
+  background: #fffaf0;
+}
+.editor-node-cache-expired,
+.editor-node-cache-failed {
+  border-color: #b45138;
+  background: #fff3ed;
+}
 .editor-node small {
   color: var(--ink-soft);
 }
