@@ -1,37 +1,27 @@
-import { NavLink } from "react-router";
-
-import { ModeToggle } from "./mode-toggle";
-import UserMenu from "./user-menu";
+import { CircleHelp, Menu } from "lucide-react";
 
 export default function Header() {
-  const links = [
-    { to: "/", label: "Home" },
-    { to: "/dashboard", label: "Dashboard" },
-  ] as const;
-
   return (
-    <div>
-      <div className="flex flex-row items-center justify-between px-2 py-1">
-        <nav className="flex gap-4 text-lg">
-          {links.map(({ to, label }) => {
-            return (
-              <NavLink
-                key={to}
-                to={to}
-                className={({ isActive }) => (isActive ? "font-bold" : "")}
-                end
-              >
-                {label}
-              </NavLink>
-            );
-          })}
-        </nav>
-        <div className="flex items-center gap-2">
-          <ModeToggle />
-          <UserMenu />
-        </div>
+    <header className="site-header">
+      <a className="brand" href="/" aria-label="ScaleLab home">
+        <span className="brand-mark" aria-hidden="true">
+          S
+        </span>
+        <span>ScaleLab</span>
+      </a>
+      <div className="header-context">
+        <span className="header-lab-label">URL shortener</span>
+        <span className="header-divider" aria-hidden="true" />
+        <span className="header-progress">Lab 01 of 01</span>
       </div>
-      <hr />
-    </div>
+      <nav aria-label="Secondary navigation">
+        <a href="#lab-title">
+          <CircleHelp aria-hidden="true" size={17} /> <span>Brief</span>
+        </a>
+        <button type="button" aria-label="Open lab menu">
+          <Menu aria-hidden="true" size={19} />
+        </button>
+      </nav>
+    </header>
   );
 }
