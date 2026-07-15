@@ -14,6 +14,7 @@ import {
   type ArchitectureNode,
   type ComponentType,
 } from "@/lib/architecture";
+import type { SimulationResult, Snapshot } from "@/lib/simulation";
 
 const typeNames: Record<ComponentType, string> = {
   client: "Client",
@@ -39,13 +40,39 @@ export function ArchitectureEditor() {
   const [selectedId, setSelectedId] = useState(architecture.nodes[0]?.id ?? "");
   const [connectionSource, setConnectionSource] = useState<string | null>(null);
   const [notice, setNotice] = useState("Select a component to inspect it.");
+  const [simulation, setSimulation] = useState<SimulationResult | null>(null);
+  const [liveSnapshot, setLiveSnapshot] = useState<Snapshot | null>(null);
   const selected = architecture.nodes.find((node) => node.id === selectedId);
   const validation = useMemo(() => validateArchitecture(architecture), [architecture]);
   const importInput = useRef<HTMLInputElement>(null);
+  const worker = useRef<Worker | null>(null);
 
   useEffect(() => {
     saveArchitecture(window.localStorage, architecture);
   }, [architecture]);
+
+  useEffect(() => {
+    worker.current = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    worker.current.onmessage = (
+      event: MessageEvent<
+        { type: "snapshot"; snapshot: Snapshot } | { type: "complete"; result: SimulationResult }
+      >,
+    ) => {
+      if (event.data.type === "snapshot") {
+        setLiveSnapshot(event.data.snapshot);
+        return;
+      }
+      setSimulation(event.data.result);
+      setNotice(
+        event.data.result.outcome === "failed"
+          ? "Run frozen at its first objective breach."
+          : "Run completed within its objectives.",
+      );
+    };
+    return () => worker.current?.terminate();
+  }, []);
 
   function updateNode(id: string, update: (node: ArchitectureNode) => ArchitectureNode) {
     setArchitecture((current) => ({
@@ -132,6 +159,14 @@ export function ArchitectureEditor() {
     }
   }
 
+  function runDesign() {
+    if (!validation.runnable) return setNotice(validation.errors[0]);
+    setNotice("Running deterministic scenario in the simulation worker…");
+    setLiveSnapshot(null);
+    setSimulation(null);
+    worker.current?.postMessage({ architecture, seed: 1 });
+  }
+
   return (
     <section className="editor-grid" aria-label="Architecture editor">
       <aside className="workspace-panel component-palette" aria-labelledby="palette-title">
@@ -169,17 +204,7 @@ export function ArchitectureEditor() {
             <p className="eyebrow">Architecture</p>
             <h2 id="architecture-title">Build a request path</h2>
           </div>
-          <button
-            className="run-button"
-            type="button"
-            onClick={() =>
-              setNotice(
-                validation.runnable
-                  ? "Design is structurally runnable. Simulation arrives in Lab 04."
-                  : validation.errors[0],
-              )
-            }
-          >
+          <button className="run-button" type="button" onClick={runDesign}>
             <Play aria-hidden="true" size={14} /> Validate & run
           </button>
         </div>
@@ -367,6 +392,63 @@ export function ArchitectureEditor() {
               <li key={error}>{error}</li>
             ))}
           </ul>
+        )}
+        {simulation && (
+          <section className="run-report" aria-label="Simulation result">
+            <p className="eyebrow">Latest run</p>
+            <strong
+              className={simulation.outcome === "failed" ? "validation-bad" : "validation-good"}
+            >
+              {simulation.outcome === "failed" ? "Frozen: objective breach" : "Passed"}
+            </strong>
+            {simulation.snapshots.at(-1) && (
+              <div className="run-metrics">
+                <span>
+                  Availability{" "}
+                  <b>{(simulation.snapshots.at(-1)!.availability * 100).toFixed(2)}%</b>
+                </span>
+                <span>
+                  p95 <b>{simulation.snapshots.at(-1)!.p95LatencyMs}ms</b>
+                </span>
+                <span>
+                  Throughput <b>{simulation.snapshots.at(-1)!.throughput.toLocaleString()}/s</b>
+                </span>
+                <span>
+                  Queue <b>{simulation.snapshots.at(-1)!.queued.toLocaleString()}</b>
+                </span>
+                <span>
+                  Cost <b>${simulation.snapshots.at(-1)!.cost}/h</b>
+                </span>
+              </div>
+            )}
+            <ol className="run-events">
+              {simulation.events.map((event) => (
+                <li key={`${event.second}-${event.type}`}>
+                  <span>{String(event.second).padStart(2, "0")}:00</span>
+                  {event.message}
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+        {liveSnapshot && !simulation && (
+          <section className="run-report" aria-label="Live simulation metrics">
+            <p className="eyebrow">Running / {liveSnapshot.second}s</p>
+            <div className="run-metrics">
+              <span>
+                Availability <b>{(liveSnapshot.availability * 100).toFixed(2)}%</b>
+              </span>
+              <span>
+                p95 <b>{liveSnapshot.p95LatencyMs}ms</b>
+              </span>
+              <span>
+                Throughput <b>{liveSnapshot.throughput.toLocaleString()}/s</b>
+              </span>
+              <span>
+                Queue <b>{liveSnapshot.queued.toLocaleString()}</b>
+              </span>
+            </div>
+          </section>
         )}
       </aside>
     </section>

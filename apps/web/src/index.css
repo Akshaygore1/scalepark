@@ -387,6 +387,41 @@ button {
   font-size: 10px;
   line-height: 1.45;
 }
+.run-report {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.run-report > strong {
+  font-size: 11px;
+}
+.run-metrics {
+  margin-top: 10px;
+  display: grid;
+  gap: 5px;
+}
+.run-metrics span {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.run-metrics b {
+  color: var(--ink);
+}
+.run-events {
+  margin: 13px 0 0;
+  padding-left: 16px;
+  color: var(--ink-soft);
+  font-size: 9px;
+  line-height: 1.5;
+}
+.run-events span {
+  margin-right: 5px;
+  color: var(--blue);
+  font-family: var(--mono);
+}
 .workspace-panel,
 .architecture-canvas {
   background: var(--panel);
