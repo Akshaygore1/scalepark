@@ -595,6 +595,166 @@ test("cache hits can bypass a constrained database without bypassing transport l
   assert.ok(snapshot.throughput > database.config.capacity);
 });
 
+test("autoscaling capacity becomes active only after startup delay", () => {
+  const architecture = autoscalingArchitecture({ startupDelaySeconds: 2, cooldownSeconds: 10 });
+  const api = architecture.nodes.find((node) => node.type === "api-server")!;
+  const result = runSimulation(architecture, permissiveScenario(4, 200), [], 3);
+
+  assert.equal(result.snapshots[0]!.activeReplicas[api.id], 1);
+  assert.equal(result.snapshots[0]!.throughput, 100);
+  assert.equal(result.snapshots[0]!.pendingDeployments[0]?.readyAtSecond, 2);
+  assert.equal(result.snapshots[1]!.activeReplicas[api.id], 1);
+  assert.equal(result.snapshots[2]!.activeReplicas[api.id], 2);
+  assert.equal(result.snapshots[2]!.throughput, 200);
+  assert.ok(result.events.some((event) => event.type === "scale-out-requested"));
+  assert.ok(result.events.some((event) => event.type === "deployment-applied"));
+});
+
+test("autoscaling reconciles initial replicas into configured minimum and maximum bounds", () => {
+  const belowMinimum = autoscalingArchitecture({ startupDelaySeconds: 2, cooldownSeconds: 10 });
+  const belowApi = belowMinimum.nodes.find((node) => node.type === "api-server")!;
+  belowApi.config.autoscaling.minReplicas = 2;
+  belowApi.config.autoscaling.maxReplicas = 3;
+  const aboveMaximum = structuredClone(belowMinimum);
+  const aboveApi = aboveMaximum.nodes.find((node) => node.id === belowApi.id)!;
+  aboveApi.config.replicas = 5;
+
+  assert.equal(
+    runSimulation(belowMinimum, permissiveScenario(1, 10), [], 3).snapshots[0]!
+      .activeReplicas[belowApi.id],
+    2,
+  );
+  assert.equal(
+    runSimulation(aboveMaximum, permissiveScenario(1, 10), [], 3).snapshots[0]!
+      .activeReplicas[aboveApi.id],
+    3,
+  );
+});
+
+test("aggressive autoscaling deterministically oscillates with changing traffic", () => {
+  const architecture = autoscalingArchitecture({ startupDelaySeconds: 1, cooldownSeconds: 0 });
+  const api = architecture.nodes.find((node) => node.type === "api-server")!;
+  const commands = [
+    { atSecond: 0, type: "traffic" as const, rps: 60 },
+    { atSecond: 1, type: "traffic" as const, rps: 10 },
+    { atSecond: 2, type: "traffic" as const, rps: 60 },
+    { atSecond: 3, type: "traffic" as const, rps: 10 },
+  ];
+  const result = runSimulation(architecture, permissiveScenario(4, 10), commands, 3);
+
+  assert.deepEqual(
+    result.snapshots.map((snapshot) => snapshot.activeReplicas[api.id]),
+    [1, 2, 1, 2],
+  );
+  assert.deepEqual(
+    result.events
+      .filter((event) => ["scale-out-requested", "scale-in-requested"].includes(event.type))
+      .map((event) => event.type),
+    ["scale-out-requested", "scale-in-requested", "scale-out-requested", "scale-in-requested"],
+  );
+});
+
+test("runtime configuration changes wait for their deployment delay", () => {
+  const architecture = starterArchitecture();
+  const api = architecture.nodes.find((node) => node.type === "api-server")!;
+  api.config.capacity = 100;
+  api.config.concurrency = 100;
+  const commands = [
+    {
+      atSecond: 0,
+      type: "configure" as const,
+      nodeId: api.id,
+      changes: { capacity: 300 },
+      deploymentDelaySeconds: 2,
+    },
+  ];
+  const result = runSimulation(architecture, permissiveScenario(3, 250), commands, 3);
+
+  assert.equal(result.snapshots[0]!.nodeCapacity[api.id], 100);
+  assert.equal(result.snapshots[1]!.nodeCapacity[api.id], 100);
+  assert.equal(result.snapshots[2]!.nodeCapacity[api.id], 300);
+  assert.equal(result.snapshots[2]!.throughput, 300);
+  assert.ok(result.snapshots[2]!.queued < result.snapshots[1]!.queued);
+});
+
+test("removing active capacity after deployment attributes in-flight impact", () => {
+  const architecture = starterArchitecture();
+  const api = architecture.nodes.find((node) => node.type === "api-server")!;
+  api.config.replicas = 2;
+  api.config.capacity = 100;
+  api.config.concurrency = 100;
+  const commands = [
+    {
+      atSecond: 0,
+      type: "capacity" as const,
+      nodeId: api.id,
+      replicaDelta: -1,
+      deploymentDelaySeconds: 1,
+    },
+  ];
+  const result = runSimulation(architecture, permissiveScenario(2, 150), commands, 3);
+
+  assert.equal(result.snapshots[0]!.activeReplicas[api.id], 2);
+  assert.equal(result.snapshots[0]!.throughput, 150);
+  assert.equal(result.snapshots[1]!.activeReplicas[api.id], 1);
+  assert.equal(result.snapshots[1]!.throughput, 100);
+  assert.equal(result.snapshots[1]!.queued, 45);
+  assert.equal(result.snapshots[1]!.dropped, 5);
+  assert.ok(
+    result.events.some(
+      (event) =>
+        event.type === "capacity-removed" &&
+        event.nodeId === api.id &&
+        event.message.includes("5 routed in-flight requests fail"),
+    ),
+  );
+});
+
+test("removing the final replica leaves the routed component with zero capacity", () => {
+  const architecture = starterArchitecture();
+  const api = architecture.nodes.find((node) => node.type === "api-server")!;
+  const commands = [
+    {
+      atSecond: 0,
+      type: "capacity" as const,
+      nodeId: api.id,
+      replicaDelta: -1,
+      deploymentDelaySeconds: 1,
+    },
+  ];
+  const result = runSimulation(architecture, permissiveScenario(2, 100), commands, 3);
+  assert.equal(result.snapshots[1]!.activeReplicas[api.id], 0);
+  assert.equal(result.snapshots[1]!.nodeCapacity[api.id], 0);
+  assert.equal(result.snapshots[1]!.throughput, 0);
+});
+
+test("removing surplus capacity does not fabricate in-flight failures", () => {
+  const architecture = starterArchitecture();
+  const api = architecture.nodes.find((node) => node.type === "api-server")!;
+  api.config.replicas = 10;
+  api.config.capacity = 100;
+  api.config.concurrency = 100;
+  const commands = [
+    {
+      atSecond: 0,
+      type: "capacity" as const,
+      nodeId: api.id,
+      replicaDelta: -1,
+      deploymentDelaySeconds: 1,
+    },
+  ];
+  const result = runSimulation(architecture, permissiveScenario(2, 100), commands, 3);
+  assert.equal(result.snapshots[1]!.activeReplicas[api.id], 9);
+  assert.equal(result.snapshots[1]!.dropped, 0);
+  assert.ok(
+    result.events.some(
+      (event) =>
+        event.type === "capacity-removed" &&
+        event.message.includes("0 routed in-flight requests fail"),
+    ),
+  );
+});
+
 function attachCache(architecture: ReturnType<typeof starterArchitecture>) {
   const cache = createNode("cache", architecture.nodes.length);
   const api = architecture.nodes.find((node) => node.type === "api-server")!;
@@ -668,5 +828,31 @@ function weightedApiArchitecture(slowWeight: number) {
     { id: crypto.randomUUID(), source: cdn.id, target: fastApi.id, weight: 100 - slowWeight },
     { id: crypto.randomUUID(), source: fastApi.id, target: database.id, weight: 100 },
   );
+  return architecture;
+}
+
+function autoscalingArchitecture({
+  startupDelaySeconds,
+  cooldownSeconds,
+}: {
+  startupDelaySeconds: number;
+  cooldownSeconds: number;
+}) {
+  const architecture = starterArchitecture();
+  for (const node of architecture.nodes.filter((node) => node.type !== "client")) {
+    node.config.capacity = 20_000;
+    node.config.concurrency = 1000;
+  }
+  const api = architecture.nodes.find((node) => node.type === "api-server")!;
+  api.config.capacity = 100;
+  api.config.concurrency = 100;
+  api.config.autoscaling = {
+    enabled: true,
+    threshold: 50,
+    minReplicas: 1,
+    maxReplicas: 2,
+    startupDelaySeconds,
+    cooldownSeconds,
+  };
   return architecture;
 }

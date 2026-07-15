@@ -15,7 +15,7 @@ import {
   type ComponentType,
   type Region,
 } from "@/lib/architecture";
-import type { SimulationResult, Snapshot } from "@/lib/simulation";
+import type { SimulationCommand, SimulationResult, Snapshot } from "@/lib/simulation";
 import { explainFailure, starterScenario } from "@/lib/simulation";
 
 const typeNames: Record<ComponentType, string> = {
@@ -46,6 +46,9 @@ export function ArchitectureEditor() {
   const [liveSnapshot, setLiveSnapshot] = useState<Snapshot | null>(null);
   const [replaySecond, setReplaySecond] = useState<number | null>(null);
   const [regionalIncident, setRegionalIncident] = useState<Region | "none">("none");
+  const [runtimeChange, setRuntimeChange] = useState<
+    "none" | "add-replica" | "remove-replica" | "double-capacity"
+  >("none");
   const selected = architecture.nodes.find((node) => node.id === selectedId);
   const validation = useMemo(() => validateArchitecture(architecture), [architecture]);
   const activeRegions = useMemo(() => routedRegions(architecture), [architecture]);
@@ -94,6 +97,23 @@ export function ArchitectureEditor() {
       ...current,
       nodes: current.nodes.map((node) => (node.id === id ? update(node) : node)),
     }));
+  }
+
+  function updateAutoscaling(
+    id: string,
+    key: Exclude<keyof ArchitectureNode["config"]["autoscaling"], "enabled">,
+    value: number,
+  ) {
+    updateNode(id, (node) => {
+      const autoscaling = { ...node.config.autoscaling, [key]: value };
+      if (key === "minReplicas" && value > autoscaling.maxReplicas) {
+        autoscaling.maxReplicas = value;
+      }
+      if (key === "maxReplicas" && value < autoscaling.minReplicas) {
+        autoscaling.minReplicas = value;
+      }
+      return { ...node, config: { ...node.config, autoscaling } };
+    });
   }
 
   function addNode(type: ComponentType) {
@@ -200,7 +220,30 @@ export function ArchitectureEditor() {
               },
             ],
           };
-    worker.current?.postMessage({ architecture, scenario, seed: 1 });
+    const simulationCommands: SimulationCommand[] = [];
+    if (runtimeChange !== "none") {
+      if (!selected || selected.type === "client") {
+        return setNotice("Select a non-client component for the runtime deployment preset.");
+      }
+      simulationCommands.push(
+        runtimeChange === "double-capacity"
+          ? {
+              atSecond: 3,
+              type: "configure",
+              nodeId: selected.id,
+              changes: { capacity: selected.config.capacity * 2 },
+              deploymentDelaySeconds: 2,
+            }
+          : {
+              atSecond: 3,
+              type: "capacity",
+              nodeId: selected.id,
+              replicaDelta: runtimeChange === "add-replica" ? 1 : -1,
+              deploymentDelaySeconds: 2,
+            },
+      );
+    }
+    worker.current?.postMessage({ architecture, scenario, commands: simulationCommands, seed: 1 });
   }
 
   return (
@@ -298,7 +341,8 @@ export function ArchitectureEditor() {
                 <span className="editor-node-identity">
                   <span>{node.label}</span>
                   <small>
-                    ×{node.config.replicas} · {node.config.region}
+                    ×{displayedSnapshot?.activeReplicas[node.id] ?? node.config.replicas} ·{" "}
+                    {node.config.region}
                   </small>
                 </span>
                 {health && <strong className="node-health-label">{health}</strong>}
@@ -408,6 +452,108 @@ export function ArchitectureEditor() {
                 }
               />
             </label>
+            {(["load-balancer", "api-server", "worker"] as ComponentType[]).includes(
+              selected.type,
+            ) && (
+              <fieldset className="autoscaling-config">
+                <legend>Autoscaling policy</legend>
+                <label className="config-toggle">
+                  <input
+                    type="checkbox"
+                    checked={selected.config.autoscaling.enabled}
+                    onChange={(event) =>
+                      updateNode(selected.id, (node) => ({
+                        ...node,
+                        config: {
+                          ...node.config,
+                          autoscaling: {
+                            ...node.config.autoscaling,
+                            enabled: event.target.checked,
+                          },
+                        },
+                      }))
+                    }
+                  />
+                  Enabled
+                </label>
+                <label className="config-field">
+                  Utilization threshold (%)
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={selected.config.autoscaling.threshold}
+                    onChange={(event) =>
+                      updateAutoscaling(
+                        selected.id,
+                        "threshold",
+                        Math.min(100, Math.max(1, Number(event.target.value))),
+                      )
+                    }
+                  />
+                </label>
+                <label className="config-field">
+                  Minimum replicas
+                  <input
+                    type="number"
+                    min="1"
+                    value={selected.config.autoscaling.minReplicas}
+                    onChange={(event) =>
+                      updateAutoscaling(
+                        selected.id,
+                        "minReplicas",
+                        Math.max(1, Number(event.target.value)),
+                      )
+                    }
+                  />
+                </label>
+                <label className="config-field">
+                  Maximum replicas
+                  <input
+                    type="number"
+                    min="1"
+                    value={selected.config.autoscaling.maxReplicas}
+                    onChange={(event) =>
+                      updateAutoscaling(
+                        selected.id,
+                        "maxReplicas",
+                        Math.max(1, Number(event.target.value)),
+                      )
+                    }
+                  />
+                </label>
+                <label className="config-field">
+                  Startup delay (seconds)
+                  <input
+                    type="number"
+                    min="1"
+                    value={selected.config.autoscaling.startupDelaySeconds}
+                    onChange={(event) =>
+                      updateAutoscaling(
+                        selected.id,
+                        "startupDelaySeconds",
+                        Math.max(1, Number(event.target.value)),
+                      )
+                    }
+                  />
+                </label>
+                <label className="config-field">
+                  Cooldown (seconds)
+                  <input
+                    type="number"
+                    min="0"
+                    value={selected.config.autoscaling.cooldownSeconds}
+                    onChange={(event) =>
+                      updateAutoscaling(
+                        selected.id,
+                        "cooldownSeconds",
+                        Math.max(0, Number(event.target.value)),
+                      )
+                    }
+                  />
+                </label>
+              </fieldset>
+            )}
             {(["load-balancer", "api-server", "worker"] as ComponentType[]).includes(
               selected.type,
             ) && (
@@ -592,6 +738,26 @@ export function ArchitectureEditor() {
             ))}
           </select>
         </label>
+        <label className="config-field incident-preset">
+          Runtime deployment preset
+          <select
+            value={runtimeChange}
+            onChange={(event) =>
+              setRuntimeChange(
+                event.target.value as
+                  | "none"
+                  | "add-replica"
+                  | "remove-replica"
+                  | "double-capacity",
+              )
+            }
+          >
+            <option value="none">None</option>
+            <option value="add-replica">Add selected replica · effective 05:00</option>
+            <option value="remove-replica">Remove selected replica · effective 05:00</option>
+            <option value="double-capacity">Double selected capacity · effective 05:00</option>
+          </select>
+        </label>
         {simulation && (
           <section className="run-report" aria-label="Simulation result">
             <p className="eyebrow">Latest run</p>
@@ -671,6 +837,9 @@ export function ArchitectureEditor() {
             )}
             {replaySnapshot && (
               <RoutingEvidence architecture={architecture} snapshot={replaySnapshot} />
+            )}
+            {replaySnapshot && (
+              <ScalingEvidence architecture={architecture} snapshot={replaySnapshot} />
             )}
             {failure && (
               <div className="failure-evidence">
@@ -771,6 +940,7 @@ export function ArchitectureEditor() {
               </span>
             </div>
             <RoutingEvidence architecture={architecture} snapshot={liveSnapshot} />
+            <ScalingEvidence architecture={architecture} snapshot={liveSnapshot} />
           </section>
         )}
       </aside>
@@ -824,4 +994,41 @@ function routedRegions(architecture: Architecture): Region[] {
         .map((node) => node.config.region),
     ),
   ];
+}
+
+function ScalingEvidence({
+  architecture,
+  snapshot,
+}: {
+  architecture: Architecture;
+  snapshot: Snapshot;
+}) {
+  const scalingNodes = architecture.nodes.filter(
+    (node) =>
+      node.config.autoscaling.enabled ||
+      snapshot.pendingDeployments.some((deployment) => deployment.nodeId === node.id) ||
+      snapshot.activeReplicas[node.id] !== node.config.replicas,
+  );
+  if (scalingNodes.length === 0 && snapshot.pendingDeployments.length === 0) return null;
+  return (
+    <div className="routing-evidence scaling-evidence">
+      <strong>Runtime capacity</strong>
+      <ul>
+        {scalingNodes.map((node) => (
+          <li key={node.id}>
+            {node.label}: {snapshot.activeReplicas[node.id] ?? 0} active · capacity {" "}
+            {(snapshot.nodeCapacity[node.id] ?? 0).toLocaleString()}/s
+          </li>
+        ))}
+        {snapshot.pendingDeployments.map((deployment) => (
+          <li
+            key={`${deployment.kind}-${deployment.nodeId}-${deployment.readyAtSecond}-${deployment.kind === "capacity" ? deployment.replicaDelta : "config"}`}
+          >
+            {architecture.nodes.find((node) => node.id === deployment.nodeId)?.label ?? "Component"}{" "}
+            pending until {String(deployment.readyAtSecond).padStart(2, "0")}:00 · {deployment.source}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }

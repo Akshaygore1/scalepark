@@ -484,6 +484,31 @@ button {
   font-size: 10px;
   text-transform: none;
 }
+.autoscaling-config {
+  margin: 14px 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+}
+.autoscaling-config legend {
+  padding: 0 4px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.config-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.config-toggle input {
+  margin: 0;
+}
 .validation-errors {
   margin: 15px 0 0;
   padding: 10px 10px 10px 24px;

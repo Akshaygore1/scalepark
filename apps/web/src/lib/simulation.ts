@@ -1,4 +1,9 @@
-import { validateArchitecture, type Architecture, type Region } from "./architecture";
+import {
+  validateArchitecture,
+  type Architecture,
+  type ComponentConfig,
+  type Region,
+} from "./architecture";
 
 export type Scenario = {
   version: 1;
@@ -32,7 +37,37 @@ export type RouteAllocation = {
   latencyMs: number;
   affected: boolean;
 };
-export type SimulationCommand = { atSecond: number; type: "traffic"; rps: number };
+export type SimulationCommand =
+  | { atSecond: number; type: "traffic"; rps: number }
+  | {
+      atSecond: number;
+      type: "configure";
+      nodeId: string;
+      changes: Partial<Omit<ComponentConfig, "autoscaling" | "replicas">>;
+      deploymentDelaySeconds: number;
+    }
+  | {
+      atSecond: number;
+      type: "capacity";
+      nodeId: string;
+      replicaDelta: number;
+      deploymentDelaySeconds: number;
+    };
+export type PendingDeployment =
+  | {
+      kind: "capacity";
+      nodeId: string;
+      readyAtSecond: number;
+      replicaDelta: number;
+      source: "autoscaling" | "runtime-edit";
+    }
+  | {
+      kind: "configuration";
+      nodeId: string;
+      readyAtSecond: number;
+      changes: Partial<Omit<ComponentConfig, "autoscaling" | "replicas">>;
+      source: "runtime-edit";
+    };
 export type SemanticHealth =
   | "healthy"
   | "heating"
@@ -55,6 +90,9 @@ export type Snapshot = {
   networkLatencyMs: number;
   regionalCost: number;
   routeAllocations: RouteAllocation[];
+  activeReplicas: Record<string, number>;
+  nodeCapacity: Record<string, number>;
+  pendingDeployments: PendingDeployment[];
   cacheHitRate: number;
   originLoad: number;
   hotKeyPressure: number;
@@ -83,6 +121,10 @@ export type SimulationEvent = {
     | "database-slowdown"
     | "database-failure"
     | "regional-latency"
+    | "scale-out-requested"
+    | "scale-in-requested"
+    | "deployment-applied"
+    | "capacity-removed"
     | "queue-overflow"
     | "recovery";
   message: string;
@@ -135,50 +177,130 @@ export function runSimulation(
   const validation = validateArchitecture(architecture);
   if (!validation.runnable)
     return result(validation, [], [], "invalid", undefined, seed, architecture, scenario);
-  const reachable = reachableNodeIds(architecture);
-  const nodes = architecture.nodes.filter(
+  const design = structuredClone(architecture);
+  const reachable = reachableNodeIds(design);
+  const nodes = design.nodes.filter(
     (node) => node.type !== "client" && reachable.has(node.id),
   );
   const cache = nodes.find((node) => node.type === "cache");
   const database = nodes.find((node) => node.type === "primary-database") ?? nodes[0]!;
   const queueNode = nodes.find((node) => node.type === "queue");
   const queueTrafficShare = queueNode
-    ? trafficShareReachingNode(architecture, queueNode.id)
+    ? trafficShareReachingNode(design, queueNode.id)
     : 0;
-  const queueDescendants = queueNode ? descendantNodeIds(architecture, queueNode.id) : new Set();
+  const queueDescendants = queueNode ? descendantNodeIds(design, queueNode.id) : new Set();
   const workerNodes = nodes.filter(
     (node) => node.type === "worker" && queueDescendants.has(node.id),
   );
   const workerTrafficShares = new Map(
     workerNodes.map((node) => [
       node.id,
-      queueNode ? trafficShareBetweenNodes(architecture, queueNode.id, node.id) : 0,
+      queueNode ? trafficShareBetweenNodes(design, queueNode.id, node.id) : 0,
     ]),
   );
   const transportNodes = nodes.filter(
     (node) => !["cache", "primary-database", "read-replica", "queue", "worker"].includes(node.type),
   );
   const resilienceNodes = [...transportNodes, ...(queueTrafficShare > 0 ? workerNodes : [])];
-  const workerCapacity =
-    queueNode && workerNodes.length && queueTrafficShare > 0
-      ? routedCapacityFromNode(architecture, queueNode.id)
-      : Number.POSITIVE_INFINITY;
-  const requestTimeoutMs = transportNodes.length
-    ? Math.min(...transportNodes.map((node) => node.config.timeoutMs))
-    : database.config.timeoutMs;
   const events: SimulationEvent[] = [];
   const snapshots: Snapshot[] = [];
+  const activeReplicas = Object.fromEntries(
+    nodes.map((node) => [
+      node.id,
+      node.config.autoscaling.enabled
+        ? Math.min(
+            node.config.autoscaling.maxReplicas,
+            Math.max(node.config.autoscaling.minReplicas, node.config.replicas),
+          )
+        : node.config.replicas,
+    ]),
+  );
+  const lastScalingAction = Object.fromEntries(nodes.map((node) => [node.id, -Infinity]));
+  let pendingDeployments: PendingDeployment[] = [];
   let requestBacklog = 0;
   let messageBacklog = 0;
   let firstSaturatedNodeId: string | undefined;
   let retriesWereActive = false;
   let objectiveBreached = false;
   for (let second = 0; second < scenario.durationSeconds; second += 1) {
-    const command = commands.find((item) => item.atSecond === second);
+    let removedCapacity:
+      | { nodeId: string; activeReplicas: number }
+      | undefined;
+    const readyDeployments = pendingDeployments.filter(
+      (deployment) => deployment.readyAtSecond === second,
+    );
+    pendingDeployments = pendingDeployments.filter(
+      (deployment) => deployment.readyAtSecond !== second,
+    );
+    for (const deployment of readyDeployments) {
+      const node = nodes.find((candidate) => candidate.id === deployment.nodeId);
+      if (!node) continue;
+      if (deployment.kind === "configuration") {
+        node.config = { ...node.config, ...deployment.changes };
+      } else {
+        const previousReplicas = activeReplicas[node.id] ?? node.config.replicas;
+        activeReplicas[node.id] = Math.max(
+          0,
+          previousReplicas + deployment.replicaDelta,
+        );
+        if (deployment.replicaDelta < 0) {
+          removedCapacity = {
+            nodeId: node.id,
+            activeReplicas: activeReplicas[node.id]!,
+          };
+        }
+      }
+      events.push({
+        second,
+        type: deployment.kind === "capacity" && deployment.replicaDelta < 0
+          ? "capacity-removed"
+          : "deployment-applied",
+        nodeId: node.id,
+        message:
+          deployment.kind === "capacity" && deployment.replicaDelta < 0
+            ? `${node.label} removes ${Math.abs(deployment.replicaDelta)} active replica; queued and in-flight work may be affected.`
+            : `${node.label} deployment becomes active.`,
+      });
+    }
+    for (const command of commands.filter((item) => item.atSecond === second)) {
+      if (command.type === "traffic") continue;
+      pendingDeployments.push(
+        command.type === "capacity"
+          ? {
+              kind: "capacity",
+              nodeId: command.nodeId,
+              readyAtSecond: second + Math.max(1, command.deploymentDelaySeconds),
+              replicaDelta: command.replicaDelta,
+              source: "runtime-edit",
+            }
+          : {
+              kind: "configuration",
+              nodeId: command.nodeId,
+              readyAtSecond: second + Math.max(1, command.deploymentDelaySeconds),
+              changes: command.changes,
+              source: "runtime-edit",
+            },
+      );
+    }
+    const trafficCommand = commands.find(
+      (item): item is Extract<SimulationCommand, { type: "traffic" }> =>
+        item.atSecond === second && item.type === "traffic",
+    );
     const offered =
-      (command?.rps ??
+      (trafficCommand?.rps ??
         (second >= scenario.spikeAtSecond ? scenario.spikeRps : scenario.normalRps)) +
       (seed % 3);
+    const capacityFor = (
+      node: Architecture["nodes"][number],
+      serviceTimeMs = node.config.serviceTimeMs,
+    ) => effectiveCapacity(node, serviceTimeMs, activeReplicas[node.id] ?? node.config.replicas);
+    const workerCapacity =
+      queueNode && workerNodes.length && queueTrafficShare > 0
+        ? routedCapacityFromNode(design, queueNode.id, activeReplicas)
+        : Number.POSITIVE_INFINITY;
+    const requestTimeoutMs = transportNodes.length
+      ? Math.min(...transportNodes.map((node) => node.config.timeoutMs))
+      : database.config.timeoutMs;
     const activeIncidents = (scenario.incidents ?? []).filter((incident) =>
       incidentIsActive(incident, second),
     );
@@ -280,19 +402,53 @@ export function runSimulation(
       });
     const previousRequestBacklog = requestBacklog;
     const previousMessageBacklog = messageBacklog;
-    const pathNetwork = calculatePathNetwork(architecture, affectedRegions);
+    const pathNetwork = calculatePathNetwork(design, affectedRegions);
     const networkLatencyMs = pathNetwork.p95LatencyMs;
     const networkDropped = affectedRegions.size
       ? Math.ceil(offered * pathNetwork.affectedShare * 0.02)
       : 0;
-    const routableOffered = Math.max(0, offered - networkDropped);
+    const previousSnapshot = snapshots.at(-1);
+    const removedNode = removedCapacity
+      ? nodes.find((node) => node.id === removedCapacity.nodeId)
+      : undefined;
+    const removedRouteShare = removedNode
+      ? trafficShareReachingNode(design, removedNode.id)
+      : 0;
+    const previousRoutedDemand = (previousSnapshot?.offered ?? 0) * removedRouteShare;
+    const remainingNodeCapacity = removedNode
+      ? effectiveCapacity(
+          removedNode,
+          removedNode.config.serviceTimeMs,
+          removedCapacity!.activeReplicas,
+        )
+      : 0;
+    const removalShortfallShare =
+      previousRoutedDemand === 0
+        ? 0
+        : Math.max(
+            0,
+            Math.min(1, (previousRoutedDemand - remainingNodeCapacity) / previousRoutedDemand),
+          );
+    const removalDropped = Math.min(
+      offered - networkDropped,
+      Math.ceil((previousSnapshot?.inFlight ?? 0) * removedRouteShare * removalShortfallShare),
+    );
+    if (removedCapacity) {
+      const removalEvent = [...events].reverse().find(
+        (event) => event.second === second && event.type === "capacity-removed",
+      );
+      if (removalEvent) {
+        removalEvent.message = `${removedNode?.label ?? "Component"} removes active capacity; ${removalDropped.toLocaleString()} routed in-flight requests fail from the resulting shortfall.`;
+      }
+    }
+    const routableOffered = Math.max(0, offered - networkDropped - removalDropped);
     const freshMessages = Math.round(routableOffered * queueTrafficShare);
     const freshRequests = routableOffered - freshMessages;
     const messageDemand = freshMessages + previousMessageBacklog;
     const requestDemand = freshRequests + previousRequestBacklog;
     const workerReleasedMessages = Math.min(messageDemand, workerCapacity);
     const downstreamDemand = requestDemand + workerReleasedMessages;
-    const routeAllocations = calculateRouteAllocations(architecture, offered, affectedRegions);
+    const routeAllocations = calculateRouteAllocations(design, offered, affectedRegions);
     const cacheMisses = Math.ceil(downstreamDemand * (1 - cacheHitRate));
     const workingSet = Math.ceil(downstreamDemand * (hotKeyPressure > 0 ? 0.03 : 0.18));
     const cacheEvictions = cache ? Math.max(0, workingSet - cache.config.cacheSize) : 0;
@@ -300,27 +456,28 @@ export function runSimulation(
     const databaseServiceTimeMs =
       database.config.serviceTimeMs * (databaseSlowed ? DATABASE_SLOWDOWN_FACTOR : 1);
     const connectionCapacity = Math.floor(
-      (database.config.connectionLimit * database.config.replicas * 4000) / databaseServiceTimeMs,
+      (database.config.connectionLimit * (activeReplicas[database.id] ?? 0) * 4000) /
+        databaseServiceTimeMs,
     );
-    const databaseCapacity = databaseFailed
+    const databaseCapacity = databaseFailed || (activeReplicas[database.id] ?? 0) <= 0
       ? 0
       : Math.max(
           1,
           Math.min(
-            effectiveCapacity(database, databaseServiceTimeMs),
+            capacityFor(database, databaseServiceTimeMs),
             Math.max(1, connectionCapacity),
           ),
         );
     const cacheCapacity =
-      cache && !cacheFailed ? effectiveCapacity(cache) * (1 - hotKeyPressure * 0.5) : 0;
+      cache && !cacheFailed ? capacityFor(cache) * (1 - hotKeyPressure * 0.5) : 0;
     const routedTransportNodes = transportNodes;
     const transportCapacity = routedTransportNodes.length
       ? Math.floor(
           Math.min(
             ...routedTransportNodes.map((node) => {
-              const trafficShare = trafficShareReachingNode(architecture, node.id);
+              const trafficShare = trafficShareReachingNode(design, node.id);
               return trafficShare > 0
-                ? effectiveCapacity(node) / trafficShare
+                ? capacityFor(node) / trafficShare
                 : Number.POSITIVE_INFINITY;
             }),
           ),
@@ -356,7 +513,7 @@ export function runSimulation(
     const retryMultiplier = originLoad === 0 ? 1 : amplifiedLoad / originLoad;
     const originRequestCapacity = Math.floor(databaseCapacity / retryMultiplier);
     const synchronousCapacity =
-      databaseFailed && cacheHitRate === 0
+      transportCapacity === 0 || (databaseCapacity === 0 && cacheHitRate === 0)
         ? 0
         : Math.max(
             1,
@@ -376,7 +533,7 @@ export function runSimulation(
           ? (workerNodes[0] ?? queueNode)
           : transportNodes.reduce(
               (lowest, node) =>
-                effectiveCapacity(node) < effectiveCapacity(lowest) ? node : lowest,
+                capacityFor(node) < capacityFor(lowest) ? node : lowest,
               transportNodes[0] ?? database,
             );
     const inFlight = Math.min(Math.ceil(admitted * 0.1), admitted);
@@ -393,12 +550,12 @@ export function runSimulation(
       Math.max(0, previousRequestBacklog - timeoutQueueBudget),
     );
     const queueBudget = queueNode && queueTrafficShare > 0
-      ? queueNode.config.queueCapacity * queueNode.config.replicas
+      ? queueNode.config.queueCapacity * (activeReplicas[queueNode.id] ?? 0)
       : 20_000;
     const droppedMessages =
       queueNode && queueTrafficShare > 0 ? Math.max(0, messageExcess - queueBudget) : 0;
     const droppedRequests = Math.max(0, requestExcess - timedOut - 20_000);
-    const dropped = networkDropped + droppedMessages + droppedRequests;
+    const dropped = networkDropped + removalDropped + droppedMessages + droppedRequests;
     requestBacklog = Math.max(0, requestExcess - timedOut - droppedRequests);
     messageBacklog = Math.max(0, messageExcess - droppedMessages);
     const queue = requestBacklog + messageBacklog;
@@ -419,8 +576,8 @@ export function runSimulation(
     const regionalCost = Number(
       routeAllocations
         .reduce((total, route) => {
-          const source = architecture.nodes.find((node) => node.id === route.sourceNodeId)!;
-          const target = architecture.nodes.find((node) => node.id === route.targetNodeId)!;
+          const source = design.nodes.find((node) => node.id === route.sourceNodeId)!;
+          const target = design.nodes.find((node) => node.id === route.targetNodeId)!;
           return (
             total +
             route.offered *
@@ -431,7 +588,12 @@ export function runSimulation(
         .toFixed(2),
     );
     const cost = Number(
-      (nodes.reduce((sum, node) => sum + componentCost(node), 0) + regionalCost).toFixed(2),
+      (
+        nodes.reduce(
+          (sum, node) => sum + componentCost(node, activeReplicas[node.id] ?? 0),
+          0,
+        ) + regionalCost
+      ).toFixed(2),
     );
     if (excess > 0 && !firstSaturatedNodeId) {
       firstSaturatedNodeId = bottleneck.id;
@@ -452,7 +614,7 @@ export function runSimulation(
     const databaseConnections = databaseFailed
       ? 0
       : Math.min(
-          database.config.connectionLimit * database.config.replicas,
+          database.config.connectionLimit * (activeReplicas[database.id] ?? 0),
           Math.ceil((amplifiedLoad * databaseServiceTimeMs) / 4000),
         );
     const databaseQueue = Math.max(0, amplifiedLoad - databaseCapacity);
@@ -465,9 +627,46 @@ export function runSimulation(
             ? messageDemand * (workerTrafficShares.get(node.id) ?? 0)
             : node.type === "cache" || node.type === "primary-database"
               ? amplifiedLoad
-              : offered * trafficShareReachingNode(architecture, node.id),
+              : offered * trafficShareReachingNode(design, node.id),
       ]),
     );
+    for (const node of nodes.filter((candidate) => candidate.config.autoscaling.enabled)) {
+      const policy = node.config.autoscaling;
+      const pendingDelta = pendingDeployments
+        .filter((deployment) => deployment.nodeId === node.id)
+        .reduce(
+          (sum, deployment) =>
+            sum + (deployment.kind === "capacity" ? deployment.replicaDelta : 0),
+          0,
+        );
+      const projectedReplicas = (activeReplicas[node.id] ?? 0) + pendingDelta;
+      const queuedDemand = transportNodes.some((transport) => transport.id === node.id)
+        ? previousRequestBacklog * trafficShareReachingNode(design, node.id)
+        : 0;
+      const utilization =
+        (((nodeDemand[node.id] ?? 0) + queuedDemand) / Math.max(1, capacityFor(node))) * 100;
+      const cooldownElapsed = second - (lastScalingAction[node.id] ?? -Infinity);
+      const canScale = cooldownElapsed >= policy.cooldownSeconds;
+      const scaleOut = utilization >= policy.threshold && projectedReplicas < policy.maxReplicas;
+      const scaleIn =
+        utilization < policy.threshold * 0.5 && projectedReplicas > policy.minReplicas;
+      if (!canScale || (!scaleOut && !scaleIn)) continue;
+      const replicaDelta = scaleOut ? 1 : -1;
+      pendingDeployments.push({
+        kind: "capacity",
+        nodeId: node.id,
+        readyAtSecond: second + Math.max(1, policy.startupDelaySeconds),
+        replicaDelta,
+        source: "autoscaling",
+      });
+      lastScalingAction[node.id] = second;
+      events.push({
+        second,
+        type: scaleOut ? "scale-out-requested" : "scale-in-requested",
+        nodeId: node.id,
+        message: `${node.label} requests ${scaleOut ? "one more" : "one fewer"} replica at ${Math.round(utilization)}% utilization; deployment takes ${Math.max(1, policy.startupDelaySeconds)}s.`,
+      });
+    }
     const nodeHealth = buildNodeHealth({
       nodes,
       cache,
@@ -490,6 +689,7 @@ export function runSimulation(
         recoveredIncident?.type === "regional-latency" ? recoveredIncident.region : undefined,
       bottleneckId: excess > 0 ? bottleneck.id : undefined,
       nodeDemand,
+      activeReplicas,
     });
     const systemHealth = overallHealth(Object.values(nodeHealth));
     const snapshot: Snapshot = {
@@ -507,6 +707,9 @@ export function runSimulation(
       networkLatencyMs,
       regionalCost,
       routeAllocations,
+      activeReplicas: { ...activeReplicas },
+      nodeCapacity: Object.fromEntries(nodes.map((node) => [node.id, capacityFor(node)])),
+      pendingDeployments: pendingDeployments.map((deployment) => ({ ...deployment })),
       cacheHitRate,
       originLoad,
       hotKeyPressure,
@@ -590,11 +793,13 @@ const REGIONAL_COST_PER_RPS_MS = 0.000002;
 function effectiveCapacity(
   node: Architecture["nodes"][number],
   serviceTimeMs = node.config.serviceTimeMs,
+  replicas = node.config.replicas,
 ) {
+  if (replicas <= 0) return 0;
   const serviceLimit = (node.config.concurrency * 1000) / serviceTimeMs;
   return Math.max(
     1,
-    Math.floor(Math.min(node.config.capacity, serviceLimit) * node.config.replicas),
+    Math.floor(Math.min(node.config.capacity, serviceLimit) * replicas),
   );
 }
 
@@ -634,6 +839,7 @@ type NodeHealthInput = {
   recoveredRegion: Region | undefined;
   bottleneckId: string | undefined;
   nodeDemand: Record<string, number>;
+  activeReplicas: Record<string, number>;
 };
 
 function buildNodeHealth(input: NodeHealthInput): Record<string, SemanticHealth> {
@@ -641,7 +847,9 @@ function buildNodeHealth(input: NodeHealthInput): Record<string, SemanticHealth>
     input.nodes.map((node) => [node.id, "healthy" as SemanticHealth]),
   );
   for (const node of input.nodes) {
-    const utilization = (input.nodeDemand[node.id] ?? 0) / Math.max(1, effectiveCapacity(node));
+    const utilization =
+      (input.nodeDemand[node.id] ?? 0) /
+      Math.max(1, effectiveCapacity(node, node.config.serviceTimeMs, input.activeReplicas[node.id]));
     if (utilization >= 0.75) health[node.id] = "heating";
   }
   for (const node of input.nodes) {
@@ -687,11 +895,11 @@ function calculateCacheHitRate(cache: Architecture["nodes"][number], hotKeyPress
   );
 }
 
-function componentCost(node: Architecture["nodes"][number]) {
+function componentCost(node: Architecture["nodes"][number], replicas = node.config.replicas) {
   const capacityCost = node.config.capacity * 0.00015;
   const concurrencyCost = node.config.concurrency * 0.001;
   const servicePerformanceCost = (1000 / node.config.serviceTimeMs) * 0.01;
-  return node.config.replicas * (capacityCost + concurrencyCost + servicePerformanceCost);
+  return replicas * (capacityCost + concurrencyCost + servicePerformanceCost);
 }
 
 function calculateRouteAllocations(
@@ -858,12 +1066,20 @@ function descendantNodeIds(architecture: Architecture, sourceId: string) {
 function routedCapacityFromNode(
   architecture: Architecture,
   nodeId: string,
+  activeReplicas?: Record<string, number>,
   visited = new Set<string>(),
 ): number {
   return routedCapacityWith(
     architecture,
     nodeId,
-    (node) => (node.type === "worker" ? effectiveCapacity(node) : Number.POSITIVE_INFINITY),
+    (node) =>
+      node.type === "worker"
+        ? effectiveCapacity(
+            node,
+            node.config.serviceTimeMs,
+            activeReplicas?.[node.id] ?? node.config.replicas,
+          )
+        : Number.POSITIVE_INFINITY,
     visited,
   );
 }
