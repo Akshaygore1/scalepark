@@ -268,6 +268,15 @@ button {
   stroke: #7195c8;
   stroke-width: 2;
 }
+.edge-layer text {
+  fill: #365c8d;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #f7faf9;
+  stroke-width: 3px;
+}
 .editor-node {
   position: absolute;
   z-index: 1;
@@ -511,6 +520,22 @@ button {
 }
 .run-metrics b {
   color: var(--ink);
+}
+.routing-evidence {
+  margin-top: 12px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.routing-evidence strong {
+  color: var(--ink);
+}
+.routing-evidence ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  line-height: 1.55;
 }
 .run-events {
   margin: 13px 0 0;

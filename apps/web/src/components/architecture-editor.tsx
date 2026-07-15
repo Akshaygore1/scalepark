@@ -13,9 +13,10 @@ import {
   type Architecture,
   type ArchitectureNode,
   type ComponentType,
+  type Region,
 } from "@/lib/architecture";
 import type { SimulationResult, Snapshot } from "@/lib/simulation";
-import { explainFailure } from "@/lib/simulation";
+import { explainFailure, starterScenario } from "@/lib/simulation";
 
 const typeNames: Record<ComponentType, string> = {
   client: "Client",
@@ -44,8 +45,10 @@ export function ArchitectureEditor() {
   const [simulation, setSimulation] = useState<SimulationResult | null>(null);
   const [liveSnapshot, setLiveSnapshot] = useState<Snapshot | null>(null);
   const [replaySecond, setReplaySecond] = useState<number | null>(null);
+  const [regionalIncident, setRegionalIncident] = useState<Region | "none">("none");
   const selected = architecture.nodes.find((node) => node.id === selectedId);
   const validation = useMemo(() => validateArchitecture(architecture), [architecture]);
+  const activeRegions = useMemo(() => routedRegions(architecture), [architecture]);
   const replaySnapshot =
     simulation?.snapshots.find((snapshot) => snapshot.second === replaySecond) ??
     simulation?.snapshots.at(-1);
@@ -72,9 +75,14 @@ export function ArchitectureEditor() {
         return;
       }
       setSimulation(event.data.result);
+      const observedRecovery = event.data.result.events.some(
+        (simulationEvent) => simulationEvent.type === "regional-latency",
+      );
       setNotice(
         event.data.result.outcome === "failed"
-          ? "Run frozen at its first objective breach."
+          ? observedRecovery
+            ? "Run captured the regional objective breach and its recovery."
+            : "Run frozen at its first objective breach."
           : "Run completed within its objectives.",
       );
     };
@@ -168,10 +176,31 @@ export function ArchitectureEditor() {
 
   function runDesign() {
     if (!validation.runnable) return setNotice(validation.errors[0]);
+    if (regionalIncident !== "none" && !activeRegions.includes(regionalIncident)) {
+      setRegionalIncident("none");
+      return setNotice("Choose a regional incident used by an active request path.");
+    }
     setNotice("Running deterministic scenario in the simulation worker…");
     setLiveSnapshot(null);
     setSimulation(null);
-    worker.current?.postMessage({ architecture, seed: 1 });
+    const scenario =
+      regionalIncident === "none"
+        ? starterScenario
+        : {
+            ...starterScenario,
+            durationSeconds: 10,
+            spikeAtSecond: 99,
+            observeRecovery: true,
+            incidents: [
+              {
+                atSecond: 5,
+                type: "regional-latency" as const,
+                region: regionalIncident,
+                durationSeconds: 3,
+              },
+            ],
+          };
+    worker.current?.postMessage({ architecture, scenario, seed: 1 });
   }
 
   return (
@@ -227,13 +256,20 @@ export function ArchitectureEditor() {
               const target = architecture.nodes.find((node) => node.id === edge.target);
               if (!source || !target) return null;
               return (
-                <line
-                  key={edge.id}
-                  x1={source.x + 72}
-                  y1={source.y + 20}
-                  x2={target.x + 72}
-                  y2={target.y + 20}
-                />
+                <g key={edge.id}>
+                  <line
+                    x1={source.x + 72}
+                    y1={source.y + 20}
+                    x2={target.x + 72}
+                    y2={target.y + 20}
+                  />
+                  <text
+                    x={(source.x + target.x) / 2 + 72}
+                    y={(source.y + target.y) / 2 + 14}
+                  >
+                    {edge.weight}%
+                  </text>
+                </g>
               );
             })}
           </svg>
@@ -261,7 +297,9 @@ export function ArchitectureEditor() {
               >
                 <span className="editor-node-identity">
                   <span>{node.label}</span>
-                  <small>×{node.config.replicas}</small>
+                  <small>
+                    ×{node.config.replicas} · {node.config.region}
+                  </small>
                 </span>
                 {health && <strong className="node-health-label">{health}</strong>}
               </button>
@@ -511,7 +549,7 @@ export function ArchitectureEditor() {
               .filter((edge) => edge.source === selected.id)
               .map((edge) => (
                 <label className="config-field" key={edge.id}>
-                  Route weight %
+                  Route to {architecture.nodes.find((node) => node.id === edge.target)?.label} (%)
                   <input
                     type="number"
                     min="1"
@@ -540,13 +578,31 @@ export function ArchitectureEditor() {
             ))}
           </ul>
         )}
+        <label className="config-field incident-preset">
+          Regional incident preset
+          <select
+            value={regionalIncident}
+            onChange={(event) => setRegionalIncident(event.target.value as Region | "none")}
+          >
+            <option value="none">None</option>
+            {activeRegions.map((region) => (
+              <option key={region} value={region}>
+                {region} latency at 05:00
+              </option>
+            ))}
+          </select>
+        </label>
         {simulation && (
           <section className="run-report" aria-label="Simulation result">
             <p className="eyebrow">Latest run</p>
             <strong
               className={simulation.outcome === "failed" ? "validation-bad" : "validation-good"}
             >
-              {simulation.outcome === "failed" ? "Frozen: objective breach" : "Passed"}
+              {simulation.outcome === "failed"
+                ? simulation.events.some((event) => event.type === "recovery")
+                  ? "Objective breached · recovered"
+                  : "Frozen: objective breach"
+                : "Passed"}
             </strong>
             {replaySnapshot && (
               <span className={`semantic-health semantic-health-${replaySnapshot.systemHealth}`}>
@@ -569,6 +625,12 @@ export function ArchitectureEditor() {
                 </span>
                 <span>
                   Cost <b>${replaySnapshot.cost}/h</b>
+                </span>
+                <span>
+                  Network <b>{replaySnapshot.networkLatencyMs}ms</b>
+                </span>
+                <span>
+                  Regional cost <b>${replaySnapshot.regionalCost}/h</b>
                 </span>
                 <span>
                   Cache hit <b>{(replaySnapshot.cacheHitRate * 100).toFixed(1)}%</b>
@@ -606,6 +668,9 @@ export function ArchitectureEditor() {
                   </span>
                 )}
               </div>
+            )}
+            {replaySnapshot && (
+              <RoutingEvidence architecture={architecture} snapshot={replaySnapshot} />
             )}
             {failure && (
               <div className="failure-evidence">
@@ -665,6 +730,12 @@ export function ArchitectureEditor() {
                 Queue <b>{liveSnapshot.queued.toLocaleString()}</b>
               </span>
               <span>
+                Network <b>{liveSnapshot.networkLatencyMs}ms</b>
+              </span>
+              <span>
+                Regional cost <b>${liveSnapshot.regionalCost}/h</b>
+              </span>
+              <span>
                 Cache hit <b>{(liveSnapshot.cacheHitRate * 100).toFixed(1)}%</b>
               </span>
               <span>
@@ -699,9 +770,58 @@ export function ArchitectureEditor() {
                 Messages dropped <b>{liveSnapshot.droppedMessages.toLocaleString()}</b>
               </span>
             </div>
+            <RoutingEvidence architecture={architecture} snapshot={liveSnapshot} />
           </section>
         )}
       </aside>
     </section>
   );
+}
+
+function RoutingEvidence({
+  architecture,
+  snapshot,
+}: {
+  architecture: Architecture;
+  snapshot: Snapshot;
+}) {
+  return (
+    <div className="routing-evidence">
+      <strong>Active routing</strong>
+      <ul>
+        {snapshot.routeAllocations.map((route) => {
+          const source = architecture.nodes.find((node) => node.id === route.sourceNodeId);
+          const target = architecture.nodes.find((node) => node.id === route.targetNodeId);
+          return (
+            <li key={`${route.sourceNodeId}-${route.targetNodeId}`}>
+              {source?.label ?? "Unknown"} ({source?.config.region}) → {target?.label ?? "Unknown"} (
+              {target?.config.region}): {route.weight}% · {route.offered.toLocaleString()}/s · {route.latencyMs}ms
+              {route.affected ? " · affected" : ""}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function routedRegions(architecture: Architecture): Region[] {
+  const clients = architecture.nodes.filter((node) => node.type === "client");
+  const reachable = new Set(clients.map((node) => node.id));
+  const pending = [...reachable];
+  while (pending.length > 0) {
+    const sourceId = pending.shift()!;
+    for (const edge of architecture.edges.filter((candidate) => candidate.source === sourceId)) {
+      if (reachable.has(edge.target)) continue;
+      reachable.add(edge.target);
+      pending.push(edge.target);
+    }
+  }
+  return [
+    ...new Set(
+      architecture.nodes
+        .filter((node) => reachable.has(node.id))
+        .map((node) => node.config.region),
+    ),
+  ];
 }

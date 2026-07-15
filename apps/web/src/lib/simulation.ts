@@ -1,4 +1,4 @@
-import { validateArchitecture, type Architecture } from "./architecture";
+import { validateArchitecture, type Architecture, type Region } from "./architecture";
 
 export type Scenario = {
   version: 1;
@@ -10,12 +10,27 @@ export type Scenario = {
   p95TargetMs: number;
   throughputTarget: number;
   costCeiling: number;
+  observeRecovery?: boolean;
   incidents?: ScenarioIncident[];
 };
 export type ScenarioIncident = {
   atSecond: number;
-  type: "hot-key" | "cache-failure" | "database-slowdown" | "database-failure";
+  type:
+    | "hot-key"
+    | "cache-failure"
+    | "database-slowdown"
+    | "database-failure"
+    | "regional-latency";
+  region?: Region;
   durationSeconds?: number;
+};
+export type RouteAllocation = {
+  sourceNodeId: string;
+  targetNodeId: string;
+  weight: number;
+  offered: number;
+  latencyMs: number;
+  affected: boolean;
 };
 export type SimulationCommand = { atSecond: number; type: "traffic"; rps: number };
 export type SemanticHealth =
@@ -37,6 +52,9 @@ export type Snapshot = {
   p95LatencyMs: number;
   throughput: number;
   cost: number;
+  networkLatencyMs: number;
+  regionalCost: number;
+  routeAllocations: RouteAllocation[];
   cacheHitRate: number;
   originLoad: number;
   hotKeyPressure: number;
@@ -64,6 +82,7 @@ export type SimulationEvent = {
     | "retry-amplification"
     | "database-slowdown"
     | "database-failure"
+    | "regional-latency"
     | "queue-overflow"
     | "recovery";
   message: string;
@@ -153,6 +172,7 @@ export function runSimulation(
   let messageBacklog = 0;
   let firstSaturatedNodeId: string | undefined;
   let retriesWereActive = false;
+  let objectiveBreached = false;
   for (let second = 0; second < scenario.durationSeconds; second += 1) {
     const command = commands.find((item) => item.atSecond === second);
     const offered =
@@ -170,6 +190,11 @@ export function runSimulation(
       (incident) => incident.type === "database-slowdown",
     );
     const databaseFailed = activeIncidents.some((incident) => incident.type === "database-failure");
+    const affectedRegions = new Set(
+      activeIncidents
+        .filter((incident) => incident.type === "regional-latency" && incident.region)
+        .map((incident) => incident.region!),
+    );
     const cacheExpired = Boolean(
       cache && !cacheFailed && second > 0 && second % Math.max(1, cache.config.ttlSeconds) === 0,
     );
@@ -212,17 +237,33 @@ export function runSimulation(
         nodeId: database.id,
         message: `${database.label} stops accepting work.`,
       });
+    const regionalIncident = (scenario.incidents ?? []).find(
+      (incident) => incident.type === "regional-latency" && incident.atSecond === second,
+    );
+    if (regionalIncident?.region)
+      events.push({
+        second,
+        type: "regional-latency",
+        nodeId: nodes.find((node) => node.config.region === regionalIncident.region)?.id,
+        message: `${regionalIncident.region} experiences elevated network latency on affected routes.`,
+      });
     const recoveredIncident = (scenario.incidents ?? []).find(
       (incident) =>
-        ["database-slowdown", "database-failure"].includes(incident.type) &&
+        ["database-slowdown", "database-failure", "regional-latency"].includes(incident.type) &&
         second === incident.atSecond + incidentDuration(incident),
     );
     if (recoveredIncident)
       events.push({
         second,
         type: "recovery",
-        nodeId: database.id,
-        message: `${database.label} recovers from the ${recoveredIncident.type.replace("database-", "")} incident.`,
+        nodeId:
+          recoveredIncident.type === "regional-latency"
+            ? nodes.find((node) => node.config.region === recoveredIncident.region)?.id
+            : database.id,
+        message:
+          recoveredIncident.type === "regional-latency"
+            ? `${recoveredIncident.region ?? "Affected region"} network latency recovers to baseline.`
+            : `${database.label} recovers from the ${recoveredIncident.type.replace("database-", "")} incident.`,
       });
     if (cacheExpired)
       events.push({
@@ -239,12 +280,19 @@ export function runSimulation(
       });
     const previousRequestBacklog = requestBacklog;
     const previousMessageBacklog = messageBacklog;
-    const freshMessages = Math.round(offered * queueTrafficShare);
-    const freshRequests = offered - freshMessages;
+    const pathNetwork = calculatePathNetwork(architecture, affectedRegions);
+    const networkLatencyMs = pathNetwork.p95LatencyMs;
+    const networkDropped = affectedRegions.size
+      ? Math.ceil(offered * pathNetwork.affectedShare * 0.02)
+      : 0;
+    const routableOffered = Math.max(0, offered - networkDropped);
+    const freshMessages = Math.round(routableOffered * queueTrafficShare);
+    const freshRequests = routableOffered - freshMessages;
     const messageDemand = freshMessages + previousMessageBacklog;
     const requestDemand = freshRequests + previousRequestBacklog;
     const workerReleasedMessages = Math.min(messageDemand, workerCapacity);
     const downstreamDemand = requestDemand + workerReleasedMessages;
+    const routeAllocations = calculateRouteAllocations(architecture, offered, affectedRegions);
     const cacheMisses = Math.ceil(downstreamDemand * (1 - cacheHitRate));
     const workingSet = Math.ceil(downstreamDemand * (hotKeyPressure > 0 ? 0.03 : 0.18));
     const cacheEvictions = cache ? Math.max(0, workingSet - cache.config.cacheSize) : 0;
@@ -265,8 +313,18 @@ export function runSimulation(
         );
     const cacheCapacity =
       cache && !cacheFailed ? effectiveCapacity(cache) * (1 - hotKeyPressure * 0.5) : 0;
-    const transportCapacity = transportNodes.length
-      ? Math.min(...transportNodes.map(effectiveCapacity))
+    const routedTransportNodes = transportNodes;
+    const transportCapacity = routedTransportNodes.length
+      ? Math.floor(
+          Math.min(
+            ...routedTransportNodes.map((node) => {
+              const trafficShare = trafficShareReachingNode(architecture, node.id);
+              return trafficShare > 0
+                ? effectiveCapacity(node) / trafficShare
+                : Number.POSITIVE_INFINITY;
+            }),
+          ),
+        )
       : Number.POSITIVE_INFINITY;
     const failedDatabaseAttempts = databaseFailed
       ? originLoad
@@ -340,7 +398,7 @@ export function runSimulation(
     const droppedMessages =
       queueNode && queueTrafficShare > 0 ? Math.max(0, messageExcess - queueBudget) : 0;
     const droppedRequests = Math.max(0, requestExcess - timedOut - 20_000);
-    const dropped = droppedMessages + droppedRequests;
+    const dropped = networkDropped + droppedMessages + droppedRequests;
     requestBacklog = Math.max(0, requestExcess - timedOut - droppedRequests);
     messageBacklog = Math.max(0, messageExcess - droppedMessages);
     const queue = requestBacklog + messageBacklog;
@@ -352,12 +410,29 @@ export function runSimulation(
       42 +
         (queue / Math.max(1, synchronousCapacity)) * 420 +
         databaseServiceTimeMs +
+        networkLatencyMs +
         activeRetryPolicies.reduce(
           (delay, policy) => delay + policy.node.config.retries * policy.node.config.timeoutMs,
           0,
         ),
     );
-    const cost = Number(nodes.reduce((sum, node) => sum + componentCost(node), 0).toFixed(2));
+    const regionalCost = Number(
+      routeAllocations
+        .reduce((total, route) => {
+          const source = architecture.nodes.find((node) => node.id === route.sourceNodeId)!;
+          const target = architecture.nodes.find((node) => node.id === route.targetNodeId)!;
+          return (
+            total +
+            route.offered *
+              networkLatencyBetween(source.config.region, target.config.region, affectedRegions) *
+              REGIONAL_COST_PER_RPS_MS
+          );
+        }, 0)
+        .toFixed(2),
+    );
+    const cost = Number(
+      (nodes.reduce((sum, node) => sum + componentCost(node), 0) + regionalCost).toFixed(2),
+    );
     if (excess > 0 && !firstSaturatedNodeId) {
       firstSaturatedNodeId = bottleneck.id;
       events.push({
@@ -388,9 +463,9 @@ export function runSimulation(
           ? messageDemand
           : node.type === "worker"
             ? messageDemand * (workerTrafficShares.get(node.id) ?? 0)
-          : node.type === "cache" || node.type === "primary-database"
-            ? amplifiedLoad
-            : offered,
+            : node.type === "cache" || node.type === "primary-database"
+              ? amplifiedLoad
+              : offered * trafficShareReachingNode(architecture, node.id),
       ]),
     );
     const nodeHealth = buildNodeHealth({
@@ -403,10 +478,16 @@ export function runSimulation(
       hotKeyPressure,
       databaseFailed,
       databaseSlowed,
+      affectedRegions,
       databaseQueue,
       queueBacklog: queueNode && queueTrafficShare > 0 ? messageBacklog : 0,
       droppedMessages,
-      recoveredDatabase: Boolean(recoveredIncident),
+      recoveredDatabase: Boolean(
+        recoveredIncident &&
+          ["database-slowdown", "database-failure"].includes(recoveredIncident.type),
+      ),
+      recoveredRegion:
+        recoveredIncident?.type === "regional-latency" ? recoveredIncident.region : undefined,
       bottleneckId: excess > 0 ? bottleneck.id : undefined,
       nodeDemand,
     });
@@ -423,6 +504,9 @@ export function runSimulation(
       p95LatencyMs,
       throughput: admitted,
       cost,
+      networkLatencyMs,
+      regionalCost,
+      routeAllocations,
       cacheHitRate,
       originLoad,
       hotKeyPressure,
@@ -452,23 +536,25 @@ export function runSimulation(
         nodeId: firstSaturatedNodeId,
         message: `Objective breached: ${Math.round(availability * 10000) / 100}% availability, p95 ${p95LatencyMs}ms.`,
       });
-      return result(
-        validation,
-        snapshots,
-        events,
-        "failed",
-        firstSaturatedNodeId,
-        seed,
-        architecture,
-        scenario,
-      );
+      objectiveBreached = true;
+      if (!scenario.observeRecovery)
+        return result(
+          validation,
+          snapshots,
+          events,
+          "failed",
+          firstSaturatedNodeId,
+          seed,
+          architecture,
+          scenario,
+        );
     }
   }
   return result(
     validation,
     snapshots,
     events,
-    "passed",
+    objectiveBreached ? "failed" : "passed",
     firstSaturatedNodeId,
     seed,
     architecture,
@@ -499,6 +585,7 @@ function result(
 }
 
 const DATABASE_SLOWDOWN_FACTOR = 4;
+const REGIONAL_COST_PER_RPS_MS = 0.000002;
 
 function effectiveCapacity(
   node: Architecture["nodes"][number],
@@ -515,6 +602,7 @@ function incidentDuration(incident: ScenarioIncident) {
   if (incident.durationSeconds !== undefined) return Math.max(1, incident.durationSeconds);
   if (incident.type === "database-slowdown") return 5;
   if (incident.type === "database-failure") return 4;
+  if (incident.type === "regional-latency") return 3;
   return Number.POSITIVE_INFINITY;
 }
 
@@ -538,10 +626,12 @@ type NodeHealthInput = {
   hotKeyPressure: number;
   databaseFailed: boolean;
   databaseSlowed: boolean;
+  affectedRegions: Set<Region>;
   databaseQueue: number;
   queueBacklog: number;
   droppedMessages: number;
   recoveredDatabase: boolean;
+  recoveredRegion: Region | undefined;
   bottleneckId: string | undefined;
   nodeDemand: Record<string, number>;
 };
@@ -553,6 +643,10 @@ function buildNodeHealth(input: NodeHealthInput): Record<string, SemanticHealth>
   for (const node of input.nodes) {
     const utilization = (input.nodeDemand[node.id] ?? 0) / Math.max(1, effectiveCapacity(node));
     if (utilization >= 0.75) health[node.id] = "heating";
+  }
+  for (const node of input.nodes) {
+    if (input.affectedRegions.has(node.config.region)) health[node.id] = "heating";
+    if (input.recoveredRegion === node.config.region) health[node.id] = "recovered";
   }
   if (input.cache) {
     if (input.cacheFailed) health[input.cache.id] = "failed";
@@ -599,6 +693,115 @@ function componentCost(node: Architecture["nodes"][number]) {
   const servicePerformanceCost = (1000 / node.config.serviceTimeMs) * 0.01;
   return node.config.replicas * (capacityCost + concurrencyCost + servicePerformanceCost);
 }
+
+function calculateRouteAllocations(
+  architecture: Architecture,
+  offered: number,
+  affectedRegions: Set<Region>,
+): RouteAllocation[] {
+  const clients = architecture.nodes.filter((node) => node.type === "client");
+  if (clients.length === 0) return [];
+  return architecture.edges
+    .map((edge) => {
+      const outgoing = architecture.edges.filter((candidate) => candidate.source === edge.source);
+      const totalWeight = outgoing.reduce((sum, candidate) => sum + candidate.weight, 0);
+      const sourceShare =
+        clients.reduce(
+          (share, client) =>
+            share + trafficShareBetweenNodes(architecture, client.id, edge.source),
+          0,
+        ) / clients.length;
+      const normalizedWeight = edge.weight / totalWeight;
+      const source = architecture.nodes.find((node) => node.id === edge.source)!;
+      const target = architecture.nodes.find((node) => node.id === edge.target)!;
+      return {
+        sourceNodeId: edge.source,
+        targetNodeId: edge.target,
+        weight: Math.round(normalizedWeight * 100),
+        offered: Math.round(offered * sourceShare * normalizedWeight),
+        latencyMs: networkLatencyBetween(
+          source.config.region,
+          target.config.region,
+          affectedRegions,
+        ),
+        affected:
+          affectedRegions.has(source.config.region) || affectedRegions.has(target.config.region),
+      };
+    })
+    .filter((route) => route.offered > 0);
+}
+
+function calculatePathNetwork(architecture: Architecture, affectedRegions: Set<Region>) {
+  const clients = architecture.nodes.filter((node) => node.type === "client");
+  const paths = clients.flatMap((client) =>
+    pathNetworkFromNode(architecture, client.id, affectedRegions).map((path) => ({
+      ...path,
+      share: path.share / Math.max(1, clients.length),
+    })),
+  );
+  const sorted = [...paths].sort((left, right) => left.latencyMs - right.latencyMs);
+  let cumulativeShare = 0;
+  let p95LatencyMs = 0;
+  for (const path of sorted) {
+    cumulativeShare += path.share;
+    p95LatencyMs = path.latencyMs;
+    if (cumulativeShare >= 0.95) break;
+  }
+  return {
+    p95LatencyMs,
+    affectedShare: Math.min(
+      1,
+      paths.filter((path) => path.affected).reduce((sum, path) => sum + path.share, 0),
+    ),
+  };
+}
+
+function pathNetworkFromNode(
+  architecture: Architecture,
+  nodeId: string,
+  affectedRegions: Set<Region>,
+  visited = new Set<string>(),
+): Array<{ share: number; latencyMs: number; affected: boolean }> {
+  if (visited.has(nodeId)) return [];
+  const outgoing = architecture.edges.filter((edge) => edge.source === nodeId);
+  if (outgoing.length === 0) return [{ share: 1, latencyMs: 0, affected: false }];
+  const source = architecture.nodes.find((node) => node.id === nodeId)!;
+  const totalWeight = outgoing.reduce((sum, edge) => sum + edge.weight, 0);
+  const nextVisited = new Set(visited).add(nodeId);
+  return outgoing.flatMap((edge) => {
+    const target = architecture.nodes.find((node) => node.id === edge.target)!;
+    const edgeAffected =
+      affectedRegions.has(source.config.region) || affectedRegions.has(target.config.region);
+    const edgeLatency = networkLatencyBetween(
+      source.config.region,
+      target.config.region,
+      affectedRegions,
+    );
+    return pathNetworkFromNode(architecture, edge.target, affectedRegions, nextVisited).map(
+      (path) => ({
+        share: (edge.weight / totalWeight) * path.share,
+        latencyMs: edgeLatency + path.latencyMs,
+        affected: edgeAffected || path.affected,
+      }),
+    );
+  });
+}
+
+function networkLatencyBetween(
+  source: Region,
+  target: Region,
+  affectedRegions: Set<Region>,
+) {
+  const baseLatency = REGION_LATENCY_MS[source][target];
+  return baseLatency + (affectedRegions.has(source) || affectedRegions.has(target) ? 120 : 0);
+}
+
+const REGION_LATENCY_MS: Record<Region, Record<Region, number>> = {
+  "us-east": { "us-east": 2, "us-west": 72, "eu-west": 82, "ap-south": 185 },
+  "us-west": { "us-east": 72, "us-west": 2, "eu-west": 145, "ap-south": 225 },
+  "eu-west": { "us-east": 82, "us-west": 145, "eu-west": 2, "ap-south": 130 },
+  "ap-south": { "us-east": 185, "us-west": 225, "eu-west": 130, "ap-south": 2 },
+};
 
 function trafficShareReachingNode(architecture: Architecture, targetId: string) {
   const clients = architecture.nodes.filter((node) => node.type === "client");
@@ -657,10 +860,24 @@ function routedCapacityFromNode(
   nodeId: string,
   visited = new Set<string>(),
 ): number {
+  return routedCapacityWith(
+    architecture,
+    nodeId,
+    (node) => (node.type === "worker" ? effectiveCapacity(node) : Number.POSITIVE_INFINITY),
+    visited,
+  );
+}
+
+function routedCapacityWith(
+  architecture: Architecture,
+  nodeId: string,
+  capacityFor: (node: Architecture["nodes"][number]) => number,
+  visited = new Set<string>(),
+): number {
   if (visited.has(nodeId)) return 0;
   const node = architecture.nodes.find((candidate) => candidate.id === nodeId);
   if (!node) return 0;
-  const ownCapacity = node.type === "worker" ? effectiveCapacity(node) : Number.POSITIVE_INFINITY;
+  const ownCapacity = capacityFor(node);
   const outgoing = architecture.edges.filter((edge) => edge.source === nodeId);
   if (outgoing.length === 0) return ownCapacity;
 
@@ -669,7 +886,7 @@ function routedCapacityFromNode(
   const downstreamCapacity = Math.min(
     ...outgoing.map((edge) => {
       const routeShare = edge.weight / totalWeight;
-      return routedCapacityFromNode(architecture, edge.target, nextVisited) / routeShare;
+      return routedCapacityWith(architecture, edge.target, capacityFor, nextVisited) / routeShare;
     }),
   );
   return Math.min(ownCapacity, downstreamCapacity);
@@ -693,7 +910,10 @@ function reachableNodeIds(architecture: Architecture) {
 
 export function explainFailure(result: SimulationResult): FailureReport | null {
   if (result.outcome !== "failed" || result.snapshots.length === 0) return null;
-  const frozen = result.snapshots.at(-1)!;
+  const firstBreachSecond = result.events.find((event) => event.type === "slo-breach")?.second;
+  const frozen =
+    result.snapshots.find((snapshot) => snapshot.second === firstBreachSecond) ??
+    result.snapshots.at(-1)!;
   const before = result.snapshots[0]!;
   return {
     frozenAtSecond: frozen.second,

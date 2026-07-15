@@ -420,6 +420,181 @@ test("parallel worker health uses each branch's routed demand", () => {
   assert.equal(snapshot.nodeHealth[secondWorker.id], "healthy");
 });
 
+test("weighted load-balancer routes expose branch capacity with a fixed seed", () => {
+  const mostlySlow = weightedApiArchitecture(90);
+  const mostlyFast = weightedApiArchitecture(10);
+  const scenario = permissiveScenario(1, 1000);
+
+  const slowSnapshot = runSimulation(mostlySlow, scenario, [], 7).snapshots[0]!;
+  const fastSnapshot = runSimulation(mostlyFast, scenario, [], 7).snapshots[0]!;
+
+  assert.equal(slowSnapshot.throughput, 111);
+  assert.equal(slowSnapshot.queued, 890);
+  assert.equal(slowSnapshot.p95LatencyMs, 3448);
+  assert.equal(fastSnapshot.throughput, 1000);
+  assert.equal(fastSnapshot.queued, 1);
+  assert.equal(fastSnapshot.p95LatencyMs, 80);
+  assert.deepEqual(
+    fastSnapshot.routeAllocations
+      .filter((route) => route.weight !== 100)
+      .map((route) => [route.weight, route.offered]),
+    [
+      [10, 100],
+      [90, 901],
+    ],
+  );
+  const slowApi = mostlyFast.nodes.find((node) => node.type === "api-server")!;
+  const fastApi = mostlyFast.nodes.filter((node) => node.type === "api-server")[1]!;
+  assert.equal(fastSnapshot.nodeHealth[slowApi.id], "saturated");
+  assert.equal(fastSnapshot.nodeHealth[fastApi.id], "healthy");
+});
+
+test("cross-region paths add deterministic latency and educational routing cost", () => {
+  const local = starterArchitecture();
+  const remote = structuredClone(local);
+  remote.nodes.find((node) => node.type === "primary-database")!.config.region = "ap-south";
+  const scenario = permissiveScenario(1, 500);
+
+  const localSnapshot = runSimulation(local, scenario, [], 11).snapshots[0]!;
+  const firstRemote = runSimulation(remote, scenario, [], 11).snapshots[0]!;
+  const secondRemote = runSimulation(remote, scenario, [], 11).snapshots[0]!;
+
+  assert.deepEqual(firstRemote, secondRemote);
+  assert.deepEqual(
+    {
+      networkLatencyMs: localSnapshot.networkLatencyMs,
+      p95LatencyMs: localSnapshot.p95LatencyMs,
+      regionalCost: localSnapshot.regionalCost,
+      cost: localSnapshot.cost,
+    },
+    { networkLatencyMs: 6, p95LatencyMs: 80, regionalCost: 0.01, cost: 4.04 },
+  );
+  assert.deepEqual(
+    {
+      networkLatencyMs: firstRemote.networkLatencyMs,
+      p95LatencyMs: firstRemote.p95LatencyMs,
+      regionalCost: firstRemote.regionalCost,
+      cost: firstRemote.cost,
+    },
+    { networkLatencyMs: 189, p95LatencyMs: 263, regionalCost: 0.19, cost: 4.22 },
+  );
+});
+
+test("regional latency incidents affect routed paths and emit recovery evidence", () => {
+  const architecture = starterArchitecture();
+  architecture.nodes.find((node) => node.type === "primary-database")!.config.region = "eu-west";
+  const scenario = {
+    ...permissiveScenario(5, 500),
+    p95TargetMs: 180,
+    observeRecovery: true,
+    incidents: [
+      {
+        atSecond: 1,
+        type: "regional-latency" as const,
+        region: "eu-west" as const,
+        durationSeconds: 2,
+      },
+    ],
+  };
+
+  const result = runSimulation(architecture, scenario, [], 5);
+  assert.equal(result.outcome, "failed");
+  assert.deepEqual(
+    {
+      networkLatencyMs: result.snapshots[0]!.networkLatencyMs,
+      availability: result.snapshots[0]!.availability,
+      dropped: result.snapshots[0]!.dropped,
+    },
+    { networkLatencyMs: 86, availability: 1, dropped: 0 },
+  );
+  assert.deepEqual(
+    {
+      networkLatencyMs: result.snapshots[1]!.networkLatencyMs,
+      availability: Number(result.snapshots[1]!.availability.toFixed(6)),
+      dropped: result.snapshots[1]!.dropped,
+      p95LatencyMs: result.snapshots[1]!.p95LatencyMs,
+    },
+    { networkLatencyMs: 206, availability: 0.978088, dropped: 11, p95LatencyMs: 280 },
+  );
+  assert.equal(result.snapshots[3]!.networkLatencyMs, 86);
+  assert.ok(result.events.some((event) => event.type === "regional-latency"));
+  assert.ok(result.events.some((event) => event.type === "slo-breach"));
+  assert.ok(
+    result.events.some(
+      (event) => event.type === "recovery" && event.message.includes("eu-west"),
+    ),
+  );
+  assert.ok(result.snapshots[1]!.routeAllocations.some((route) => route.affected));
+});
+
+test("reconverging weighted routes cannot exceed their shared database capacity", () => {
+  const architecture = weightedApiArchitecture(50);
+  const database = architecture.nodes.find((node) => node.type === "primary-database")!;
+  database.config.capacity = 100;
+  database.config.concurrency = 100;
+  const snapshot = runSimulation(architecture, permissiveScenario(1, 1000), [], 7).snapshots[0]!;
+  assert.equal(snapshot.throughput, 100);
+  assert.equal(snapshot.databaseQueue, 901);
+});
+
+test("independent client request paths combine their routed capacity", () => {
+  const architecture = starterArchitecture();
+  const firstApi = architecture.nodes.find((node) => node.type === "api-server")!;
+  const database = architecture.nodes.find((node) => node.type === "primary-database")!;
+  const secondClient = createNode("client", architecture.nodes.length);
+  const secondApi = createNode("api-server", architecture.nodes.length + 1);
+  firstApi.config.capacity = 100;
+  firstApi.config.concurrency = 100;
+  secondApi.config.capacity = 100;
+  secondApi.config.concurrency = 100;
+  database.config.capacity = 20_000;
+  database.config.concurrency = 1000;
+  database.config.connectionLimit = 1000;
+  architecture.nodes.push(secondClient, secondApi);
+  architecture.edges.push(
+    { id: crypto.randomUUID(), source: secondClient.id, target: secondApi.id, weight: 100 },
+    { id: crypto.randomUUID(), source: secondApi.id, target: database.id, weight: 100 },
+  );
+
+  const snapshot = runSimulation(architecture, permissiveScenario(1, 1000), [], 7).snapshots[0]!;
+  assert.equal(snapshot.throughput, 200);
+  assert.equal(snapshot.queued, 801);
+});
+
+test("client paths that reconverge do not double-count shared API capacity", () => {
+  const architecture = starterArchitecture();
+  const sharedApi = architecture.nodes.find((node) => node.type === "api-server")!;
+  const secondClient = createNode("client", architecture.nodes.length);
+  sharedApi.config.capacity = 100;
+  sharedApi.config.concurrency = 100;
+  architecture.nodes.push(secondClient);
+  architecture.edges.push({
+    id: crypto.randomUUID(),
+    source: secondClient.id,
+    target: sharedApi.id,
+    weight: 100,
+  });
+
+  const snapshot = runSimulation(architecture, permissiveScenario(1, 1000), [], 7).snapshots[0]!;
+  assert.equal(snapshot.throughput, 100);
+  assert.equal(snapshot.queued, 901);
+});
+
+test("cache hits can bypass a constrained database without bypassing transport limits", () => {
+  const architecture = starterArchitecture();
+  const cache = attachCache(architecture);
+  const database = architecture.nodes.find((node) => node.type === "primary-database")!;
+  cache.config.cacheSize = 1_000_000;
+  cache.config.ttlSeconds = 1000;
+  database.config.capacity = 100;
+  database.config.concurrency = 100;
+  database.config.connectionLimit = 1000;
+
+  const snapshot = runSimulation(architecture, permissiveScenario(1, 1000), [], 7).snapshots[0]!;
+  assert.ok(snapshot.cacheHitRate > 0.8);
+  assert.ok(snapshot.throughput > database.config.capacity);
+});
+
 function attachCache(architecture: ReturnType<typeof starterArchitecture>) {
   const cache = createNode("cache", architecture.nodes.length);
   const api = architecture.nodes.find((node) => node.type === "api-server")!;
@@ -469,4 +644,29 @@ function permissiveScenario(durationSeconds: number, normalRps: number) {
     costCeiling: 1000,
     incidents: [],
   };
+}
+
+function weightedApiArchitecture(slowWeight: number) {
+  const architecture = starterArchitecture();
+  const cdn = architecture.nodes.find((node) => node.type === "cdn")!;
+  const slowApi = architecture.nodes.find((node) => node.type === "api-server")!;
+  const database = architecture.nodes.find((node) => node.type === "primary-database")!;
+  const fastApi = createNode("api-server", architecture.nodes.length);
+  const existingRoute = architecture.edges.find(
+    (edge) => edge.source === cdn.id && edge.target === slowApi.id,
+  )!;
+  existingRoute.weight = slowWeight;
+  slowApi.config.capacity = 100;
+  slowApi.config.concurrency = 100;
+  fastApi.config.capacity = 2000;
+  fastApi.config.concurrency = 1000;
+  database.config.capacity = 20_000;
+  database.config.concurrency = 1000;
+  database.config.connectionLimit = 1000;
+  architecture.nodes.push(fastApi);
+  architecture.edges.push(
+    { id: crypto.randomUUID(), source: cdn.id, target: fastApi.id, weight: 100 - slowWeight },
+    { id: crypto.randomUUID(), source: fastApi.id, target: database.id, weight: 100 },
+  );
+  return architecture;
 }
