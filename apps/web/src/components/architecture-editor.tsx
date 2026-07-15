@@ -2,6 +2,7 @@ import { Copy, Download, Link2, Play, Plus, Trash2, Upload } from "lucide-react"
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { LearningModePanel } from "./learning-mode-panel";
+import { ScoredChallengePanel } from "./scored-challenge-panel";
 
 import {
   componentTypes,
@@ -17,13 +18,25 @@ import {
   type ComponentType,
   type Region,
 } from "@/lib/architecture";
+import { initialLearningState, learningScenario, reduceLearningState } from "@/lib/learning";
 import {
-  initialLearningState,
-  learningScenario,
-  reduceLearningState,
-} from "@/lib/learning";
-import type { SimulationCommand, SimulationResult, Snapshot } from "@/lib/simulation";
+  SCORED_CHALLENGE_SEED,
+  scoreChallenge,
+  scoredChallengeCommands,
+  scoredChallengeScenario,
+  type ChallengeScore,
+} from "@/lib/challenge";
+import type { Scenario, SimulationCommand, SimulationResult, Snapshot } from "@/lib/simulation";
 import { explainFailure, runSimulation, starterScenario } from "@/lib/simulation";
+
+type RunMode = "sandbox" | "scored";
+type RunContext = { mode: "sandbox" } | { mode: "scored"; architecture: Architecture };
+type WorkerRequest = {
+  architecture: Architecture;
+  scenario: Scenario;
+  commands: SimulationCommand[];
+  seed: number;
+};
 
 const typeNames: Record<ComponentType, string> = {
   client: "Client",
@@ -58,6 +71,8 @@ export function ArchitectureEditor() {
     "none" | "add-replica" | "remove-replica" | "double-capacity"
   >("none");
   const [learning, dispatchLearning] = useReducer(reduceLearningState, initialLearningState);
+  const [activeRun, setActiveRun] = useState<"idle" | RunMode>("idle");
+  const [challengeScore, setChallengeScore] = useState<ChallengeScore | null>(null);
   const selected = architecture.nodes.find((node) => node.id === selectedId);
   const validation = useMemo(() => validateArchitecture(architecture), [architecture]);
   const activeRegions = useMemo(() => routedRegions(architecture), [architecture]);
@@ -67,12 +82,7 @@ export function ArchitectureEditor() {
   const learningResult = useMemo(
     () =>
       learning.baseArchitecture
-        ? runSimulation(
-            learning.baseArchitecture,
-            learningScenario(learning),
-            learning.commands,
-            1,
-          )
+        ? runSimulation(learning.baseArchitecture, learningScenario(learning), learning.commands, 1)
         : null,
     [learning],
   );
@@ -89,6 +99,7 @@ export function ArchitectureEditor() {
   const failure = simulation ? explainFailure(simulation) : null;
   const importInput = useRef<HTMLInputElement>(null);
   const worker = useRef<Worker | null>(null);
+  const runContext = useRef<RunContext | null>(null);
 
   useEffect(() => {
     saveArchitecture(window.localStorage, architecture);
@@ -108,6 +119,14 @@ export function ArchitectureEditor() {
         return;
       }
       setSimulation(event.data.result);
+      setActiveRun("idle");
+      const completedRun = runContext.current;
+      runContext.current = null;
+      if (completedRun?.mode === "scored") {
+        setChallengeScore(scoreChallenge(event.data.result, completedRun.architecture));
+        setNotice("Scored attempt complete. Review the factor breakdown and replay evidence.");
+        return;
+      }
       const observedRecovery = event.data.result.events.some(
         (simulationEvent) => simulationEvent.type === "regional-latency",
       );
@@ -147,10 +166,7 @@ export function ArchitectureEditor() {
             type: "capacity",
             nodeId: id,
             replicaDelta,
-            deploymentDelaySeconds: Math.max(
-              1,
-              currentNode.config.autoscaling.startupDelaySeconds,
-            ),
+            deploymentDelaySeconds: Math.max(1, currentNode.config.autoscaling.startupDelaySeconds),
           },
         });
       }
@@ -274,9 +290,6 @@ export function ArchitectureEditor() {
       setRegionalIncident("none");
       return setNotice("Choose a regional incident used by an active request path.");
     }
-    setNotice("Running deterministic scenario in the simulation worker…");
-    setLiveSnapshot(null);
-    setSimulation(null);
     const scenario =
       regionalIncident === "none"
         ? starterScenario
@@ -317,7 +330,37 @@ export function ArchitectureEditor() {
             },
       );
     }
-    worker.current?.postMessage({ architecture, scenario, commands: simulationCommands, seed: 1 });
+    launchRun(
+      { mode: "sandbox" },
+      { architecture, scenario, commands: simulationCommands, seed: 1 },
+      "Running deterministic scenario in the simulation worker…",
+    );
+  }
+
+  function runScoredDesign() {
+    if (!validation.runnable) return setNotice(validation.errors[0]);
+    const frozenArchitecture = structuredClone(architecture);
+    setChallengeScore(null);
+    launchRun(
+      { mode: "scored", architecture: frozenArchitecture },
+      {
+        architecture: frozenArchitecture,
+        scenario: scoredChallengeScenario,
+        commands: scoredChallengeCommands,
+        seed: SCORED_CHALLENGE_SEED,
+      },
+      "Scored attempt launched. Inputs are locked to the published schedule.",
+    );
+  }
+
+  function launchRun(context: RunContext, request: WorkerRequest, message: string) {
+    runContext.current = context;
+    setActiveRun(context.mode);
+    setSimulation(null);
+    setLiveSnapshot(null);
+    setReplaySecond(null);
+    setNotice(message);
+    worker.current?.postMessage(request);
   }
 
   return (
@@ -348,7 +391,7 @@ export function ArchitectureEditor() {
               className="palette-item"
               key={type}
               type="button"
-              disabled={learning.phase !== "idle"}
+              disabled={learning.phase !== "idle" || activeRun === "scored"}
               onClick={() => addNode(type)}
             >
               {typeNames[type]} <Plus aria-hidden="true" size={15} />
@@ -366,7 +409,7 @@ export function ArchitectureEditor() {
           <button
             className="run-button"
             type="button"
-            disabled={learning.phase !== "idle"}
+            disabled={learning.phase !== "idle" || activeRun !== "idle"}
             onClick={runDesign}
           >
             <Play aria-hidden="true" size={14} /> Validate & run
@@ -391,10 +434,7 @@ export function ArchitectureEditor() {
                     x2={target.x + 72}
                     y2={target.y + 20}
                   />
-                  <text
-                    x={(source.x + target.x) / 2 + 72}
-                    y={(source.y + target.y) / 2 + 14}
-                  >
+                  <text x={(source.x + target.x) / 2 + 72} y={(source.y + target.y) / 2 + 14}>
                     {edge.weight}%
                   </text>
                 </g>
@@ -470,11 +510,7 @@ export function ArchitectureEditor() {
               >
                 <Copy size={14} /> Duplicate
               </button>
-              <button
-                type="button"
-                disabled={learning.phase !== "idle"}
-                onClick={removeSelected}
-              >
+              <button type="button" disabled={learning.phase !== "idle"} onClick={removeSelected}>
                 <Trash2 size={14} /> Remove
               </button>
             </div>
@@ -821,9 +857,15 @@ export function ArchitectureEditor() {
             ))}
           </ul>
         )}
+        <ScoredChallengePanel
+          canStart={validation.runnable && learning.phase === "idle" && activeRun === "idle"}
+          running={activeRun === "scored"}
+          score={challengeScore}
+          onStart={runScoredDesign}
+        />
         <LearningModePanel
           activeRegions={activeRegions}
-          canStart={validation.runnable}
+          canStart={validation.runnable && activeRun === "idle"}
           dispatch={dispatchLearning}
           learning={learning}
           region={learningRegion}
@@ -856,6 +898,7 @@ export function ArchitectureEditor() {
         <label className="config-field incident-preset">
           Regional incident preset
           <select
+            disabled={activeRun === "scored"}
             value={regionalIncident}
             onChange={(event) => setRegionalIncident(event.target.value as Region | "none")}
           >
@@ -870,14 +913,11 @@ export function ArchitectureEditor() {
         <label className="config-field incident-preset">
           Runtime deployment preset
           <select
+            disabled={activeRun === "scored"}
             value={runtimeChange}
             onChange={(event) =>
               setRuntimeChange(
-                event.target.value as
-                  | "none"
-                  | "add-replica"
-                  | "remove-replica"
-                  | "double-capacity",
+                event.target.value as "none" | "add-replica" | "remove-replica" | "double-capacity",
               )
             }
           >
@@ -1093,8 +1133,9 @@ function RoutingEvidence({
           const target = architecture.nodes.find((node) => node.id === route.targetNodeId);
           return (
             <li key={`${route.sourceNodeId}-${route.targetNodeId}`}>
-              {source?.label ?? "Unknown"} ({source?.config.region}) → {target?.label ?? "Unknown"} (
-              {target?.config.region}): {route.weight}% · {route.offered.toLocaleString()}/s · {route.latencyMs}ms
+              {source?.label ?? "Unknown"} ({source?.config.region}) → {target?.label ?? "Unknown"}{" "}
+              ({target?.config.region}): {route.weight}% · {route.offered.toLocaleString()}/s ·{" "}
+              {route.latencyMs}ms
               {route.affected ? " · affected" : ""}
             </li>
           );
@@ -1118,9 +1159,7 @@ function routedRegions(architecture: Architecture): Region[] {
   }
   return [
     ...new Set(
-      architecture.nodes
-        .filter((node) => reachable.has(node.id))
-        .map((node) => node.config.region),
+      architecture.nodes.filter((node) => reachable.has(node.id)).map((node) => node.config.region),
     ),
   ];
 }
@@ -1145,7 +1184,7 @@ function ScalingEvidence({
       <ul>
         {scalingNodes.map((node) => (
           <li key={node.id}>
-            {node.label}: {snapshot.activeReplicas[node.id] ?? 0} active · capacity {" "}
+            {node.label}: {snapshot.activeReplicas[node.id] ?? 0} active · capacity{" "}
             {(snapshot.nodeCapacity[node.id] ?? 0).toLocaleString()}/s
           </li>
         ))}
@@ -1154,7 +1193,8 @@ function ScalingEvidence({
             key={`${deployment.kind}-${deployment.nodeId}-${deployment.readyAtSecond}-${deployment.kind === "capacity" ? deployment.replicaDelta : "config"}`}
           >
             {architecture.nodes.find((node) => node.id === deployment.nodeId)?.label ?? "Component"}{" "}
-            pending until {String(deployment.readyAtSecond).padStart(2, "0")}:00 · {deployment.source}
+            pending until {String(deployment.readyAtSecond).padStart(2, "0")}:00 ·{" "}
+            {deployment.source}
           </li>
         ))}
       </ul>

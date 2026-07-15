@@ -515,6 +515,75 @@ button {
   border: 1px solid #9fb9a9;
   background: #f5faf7;
 }
+.scored-challenge {
+  margin: 16px 0;
+  padding: 11px;
+  border: 1px solid #b8a978;
+  background: #fffdf5;
+}
+.scored-challenge-heading,
+.score-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.scored-challenge button {
+  padding: 6px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: white;
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.scored-challenge button:disabled {
+  opacity: 0.45;
+}
+.scored-challenge-note,
+.score-cost {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.scorecard {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #d8cead;
+}
+.score-total span,
+.score-factors,
+.score-cost {
+  font-family: var(--mono);
+}
+.score-total strong {
+  font-size: 15px;
+}
+.score-factors {
+  margin: 8px 0 0;
+  font-size: 9px;
+}
+.score-factors > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid #eee8d4;
+}
+.score-factors dt,
+.score-factors dd {
+  margin: 0;
+}
+.score-factors dd {
+  display: grid;
+  text-align: right;
+}
+.score-factors dd span {
+  color: var(--ink-soft);
+}
+.score-penalty b {
+  color: #9a422d;
+}
 .learning-mode-heading,
 .learning-actions,
 .incident-actions,
