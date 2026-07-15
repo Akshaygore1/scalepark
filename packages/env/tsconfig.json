@@ -1,0 +1,3 @@
+{
+  "extends": "@infraplay/config/tsconfig.base.json"
+}

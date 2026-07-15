@@ -1,0 +1,49 @@
+{
+  "name": "web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "react-router build",
+    "start": "react-router-serve ./build/server/index.js",
+    "typecheck": "react-router typegen && tsc",
+    "dev:bare": "react-router dev"
+  },
+  "dependencies": {
+    "@infraplay/api": "workspace:*",
+    "@infraplay/env": "workspace:*",
+    "@infraplay/ui": "workspace:*",
+    "@react-router/fs-routes": "^8.1.0",
+    "@react-router/node": "^8.1.0",
+    "@react-router/serve": "^8.1.0",
+    "@tanstack/react-form": "^1.33.0",
+    "@tanstack/react-query": "^5.101.2",
+    "@trpc/client": "catalog:",
+    "@trpc/server": "catalog:",
+    "@trpc/tanstack-react-query": "^11.18.0",
+    "better-auth": "catalog:",
+    "dotenv": "catalog:",
+    "isbot": "^5.1.44",
+    "lucide-react": "catalog:",
+    "next-themes": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-router": "^8.1.0",
+    "sonner": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@infraplay/config": "workspace:*",
+    "@react-router/dev": "^8.1.0",
+    "@tailwindcss/vite": "^4.3.2",
+    "@tanstack/react-query-devtools": "^5.101.2",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "alchemy": "catalog:",
+    "react-router-devtools": "^6.2.1",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "^7.3.6",
+    "vite-tsconfig-paths": "^6.1.1"
+  }
+}
