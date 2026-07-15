@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   exportArchitecture,
   importArchitecture,
+  restoreArchitecture,
+  saveArchitecture,
   starterArchitecture,
   validateArchitecture,
 } from "./architecture";
@@ -35,4 +37,24 @@ test("architecture exports and imports without changing observable content", () 
 
 test("invalid imports are rejected", () => {
   assert.throws(() => importArchitecture('{"version":99}'), /ScaleLab architecture/);
+  assert.throws(
+    () =>
+      importArchitecture(
+        '{"version":1,"name":"bad","nodes":[{"id":"a","type":"client"}],"edges":[]}',
+      ),
+    /ScaleLab architecture/,
+  );
+});
+
+test("save and restore preserves an architecture without replacing invalid saved data", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+  };
+  const architecture = starterArchitecture();
+  saveArchitecture(storage, architecture);
+  assert.deepEqual(restoreArchitecture(storage), architecture);
+  values.set("scalelab:architecture", "not json");
+  assert.equal(restoreArchitecture(storage), null);
 });

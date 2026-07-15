@@ -331,6 +331,24 @@ button {
   gap: 5px;
   margin: 16px 0;
 }
+.design-actions {
+  display: flex;
+  gap: 5px;
+  margin: 12px 0;
+}
+.design-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--ink-soft);
+  font-size: 9px;
+}
+.design-actions input {
+  display: none;
+}
 .inspector-actions button {
   display: inline-flex;
   align-items: center;

@@ -1,9 +1,13 @@
-import { Copy, Link2, Play, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Copy, Download, Link2, Play, Plus, Trash2, Upload } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   componentTypes,
   createNode,
+  exportArchitecture,
+  importArchitecture,
+  restoreArchitecture,
+  saveArchitecture,
   starterArchitecture,
   validateArchitecture,
   type Architecture,
@@ -24,12 +28,24 @@ const typeNames: Record<ComponentType, string> = {
 };
 
 export function ArchitectureEditor() {
-  const [architecture, setArchitecture] = useState<Architecture>(starterArchitecture);
+  const [architecture, setArchitecture] = useState<Architecture>(() => {
+    if (typeof window === "undefined") return starterArchitecture();
+    try {
+      return restoreArchitecture(window.localStorage) ?? starterArchitecture();
+    } catch {
+      return starterArchitecture();
+    }
+  });
   const [selectedId, setSelectedId] = useState(architecture.nodes[0]?.id ?? "");
   const [connectionSource, setConnectionSource] = useState<string | null>(null);
   const [notice, setNotice] = useState("Select a component to inspect it.");
   const selected = architecture.nodes.find((node) => node.id === selectedId);
   const validation = useMemo(() => validateArchitecture(architecture), [architecture]);
+  const importInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    saveArchitecture(window.localStorage, architecture);
+  }, [architecture]);
 
   function updateNode(id: string, update: (node: ArchitectureNode) => ArchitectureNode) {
     setArchitecture((current) => ({
@@ -93,12 +109,49 @@ export function ArchitectureEditor() {
     setNotice("Component removed with its connections.");
   }
 
+  function downloadDesign() {
+    const url = URL.createObjectURL(
+      new Blob([exportArchitecture(architecture)], { type: "application/json" }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "scalelab-architecture.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importDesign(file?: File) {
+    if (!file) return;
+    try {
+      const next = importArchitecture(await file.text());
+      setArchitecture(next);
+      setSelectedId(next.nodes[0]?.id ?? "");
+      setNotice("Imported design replaced the current architecture.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "The design could not be imported.");
+    }
+  }
+
   return (
     <section className="editor-grid" aria-label="Architecture editor">
       <aside className="workspace-panel component-palette" aria-labelledby="palette-title">
         <div className="panel-heading">
           <p className="eyebrow">Build</p>
           <h2 id="palette-title">Components</h2>
+        </div>
+        <div className="design-actions">
+          <button type="button" onClick={downloadDesign}>
+            <Download size={13} /> Export
+          </button>
+          <button type="button" onClick={() => importInput.current?.click()}>
+            <Upload size={13} /> Import
+          </button>
+          <input
+            ref={importInput}
+            type="file"
+            accept="application/json"
+            onChange={(event) => importDesign(event.target.files?.[0])}
+          />
         </div>
         <p className="panel-intro">Add supported infrastructure to the canvas.</p>
         <div className="palette-list">

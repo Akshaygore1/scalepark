@@ -1,4 +1,5 @@
 export const ARCHITECTURE_VERSION = 1 as const;
+export const architectureStorageKey = "scalelab:architecture";
 
 export const componentTypes = [
   "client",
@@ -206,13 +207,55 @@ export function isArchitecture(value: unknown): value is Architecture {
     typeof candidate.name === "string" &&
     Array.isArray(candidate.nodes) &&
     Array.isArray(candidate.edges) &&
-    candidate.nodes.every(
-      (node) =>
-        node &&
-        typeof node === "object" &&
-        componentTypes.includes((node as ArchitectureNode).type) &&
-        typeof (node as ArchitectureNode).id === "string",
-    )
+    candidate.nodes.every(isArchitectureNode) &&
+    candidate.edges.every(isArchitectureEdge)
+  );
+}
+
+function isArchitectureNode(value: unknown): value is ArchitectureNode {
+  if (!value || typeof value !== "object") return false;
+  const node = value as ArchitectureNode;
+  const config = node.config;
+  return Boolean(
+    componentTypes.includes(node.type) &&
+    typeof node.id === "string" &&
+    typeof node.label === "string" &&
+    typeof node.x === "number" &&
+    typeof node.y === "number" &&
+    config &&
+    [
+      config.replicas,
+      config.capacity,
+      config.concurrency,
+      config.serviceTimeMs,
+      config.timeoutMs,
+      config.retries,
+      config.cacheSize,
+      config.ttlSeconds,
+      config.connectionLimit,
+      config.queueCapacity,
+    ].every((number) => typeof number === "number") &&
+    ["us-east", "us-west", "eu-west", "ap-south"].includes(config.region) &&
+    config.autoscaling &&
+    [
+      config.autoscaling.threshold,
+      config.autoscaling.minReplicas,
+      config.autoscaling.maxReplicas,
+      config.autoscaling.startupDelaySeconds,
+      config.autoscaling.cooldownSeconds,
+    ].every((number) => typeof number === "number") &&
+    typeof config.autoscaling.enabled === "boolean",
+  );
+}
+
+function isArchitectureEdge(value: unknown): value is ArchitectureEdge {
+  if (!value || typeof value !== "object") return false;
+  const edge = value as ArchitectureEdge;
+  return (
+    typeof edge.id === "string" &&
+    typeof edge.source === "string" &&
+    typeof edge.target === "string" &&
+    typeof edge.weight === "number"
   );
 }
 
@@ -230,9 +273,22 @@ export function importArchitecture(serialized: string): Architecture {
   if (!isArchitecture(candidate)) {
     throw new Error(`Import requires a ScaleLab architecture at version ${ARCHITECTURE_VERSION}.`);
   }
-  if (candidate.nodes.some((node) => !node.config || typeof node.config.capacity !== "number")) {
-    throw new Error("This design is missing required component configuration.");
-  }
   if (candidate.nodes.length === 0) throw new Error("This design contains no components.");
   return candidate;
+}
+
+export type ArchitectureStorage = Pick<Storage, "getItem" | "setItem">;
+
+export function saveArchitecture(storage: ArchitectureStorage, architecture: Architecture) {
+  storage.setItem(architectureStorageKey, exportArchitecture(architecture));
+}
+
+export function restoreArchitecture(storage: ArchitectureStorage): Architecture | null {
+  const saved = storage.getItem(architectureStorageKey);
+  if (!saved) return null;
+  try {
+    return importArchitecture(saved);
+  } catch {
+    return null;
+  }
 }
