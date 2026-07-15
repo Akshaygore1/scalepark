@@ -285,6 +285,17 @@ button {
   font-size: 10px;
   touch-action: none;
 }
+.editor-node-identity {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+.editor-node-identity > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .editor-node-selected {
   border-color: var(--blue);
   box-shadow: 0 0 0 3px #dceaff;
@@ -304,6 +315,78 @@ button {
 .editor-node-cache-failed {
   border-color: #b45138;
   background: #fff3ed;
+}
+.editor-node-health-healthy {
+  border-color: #76a891;
+}
+.editor-node-health-heating {
+  border-color: var(--amber);
+  border-style: dashed;
+  background: #fffaf0;
+}
+.editor-node-health-saturated {
+  border-color: #b45138;
+  background: #fff3ed;
+}
+.editor-node-health-queued {
+  border-color: var(--blue);
+  border-style: dashed;
+  background: var(--blue-pale);
+}
+.editor-node-health-failed {
+  border-color: #9a2f2f;
+  border-style: double;
+  background: #fdeaea;
+}
+.editor-node-health-recovered {
+  border-color: var(--green);
+  border-style: double;
+  background: #edf8f2;
+}
+.node-health-label,
+.semantic-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.node-health-label::before,
+.semantic-health::before {
+  content: "●";
+}
+.editor-node-health-heating .node-health-label::before,
+.semantic-health-heating::before {
+  content: "▲";
+  color: var(--amber);
+}
+.editor-node-health-saturated .node-health-label::before,
+.semantic-health-saturated::before {
+  content: "■";
+  color: #b45138;
+}
+.editor-node-health-queued .node-health-label::before,
+.semantic-health-queued::before {
+  content: "↻";
+  color: var(--blue);
+}
+.editor-node-health-failed .node-health-label::before,
+.semantic-health-failed::before {
+  content: "×";
+  color: #9a2f2f;
+}
+.editor-node-health-recovered .node-health-label::before,
+.semantic-health-recovered::before {
+  content: "✓";
+  color: var(--green);
+}
+.editor-node-health-healthy .node-health-label::before,
+.semantic-health-healthy::before {
+  color: var(--green);
 }
 .editor-node small {
   color: var(--ink-soft);
@@ -407,6 +490,12 @@ button {
 }
 .run-report > strong {
   font-size: 11px;
+}
+.run-report > .semantic-health {
+  margin: 8px 0 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  background: #f8faf9;
 }
 .run-metrics {
   margin-top: 10px;

@@ -49,6 +49,7 @@ export function ArchitectureEditor() {
   const replaySnapshot =
     simulation?.snapshots.find((snapshot) => snapshot.second === replaySecond) ??
     simulation?.snapshots.at(-1);
+  const displayedSnapshot = simulation ? replaySnapshot : liveSnapshot;
   const failure = simulation ? explainFailure(simulation) : null;
   const importInput = useRef<HTMLInputElement>(null);
   const worker = useRef<Worker | null>(null);
@@ -236,33 +237,36 @@ export function ArchitectureEditor() {
               );
             })}
           </svg>
-          {architecture.nodes.map((node) => (
-            <button
-              className={`editor-node ${selectedId === node.id ? "editor-node-selected" : ""} ${connectionSource === node.id ? "editor-node-connecting" : ""} ${simulation?.firstSaturatedNodeId === node.id ? "editor-node-saturated" : ""} ${node.type === "cache" && replaySnapshot && replaySnapshot.cacheHealth !== "healthy" ? `editor-node-cache-${replaySnapshot.cacheHealth}` : ""}`}
-              key={node.id}
-              type="button"
-              style={{ left: `${node.x}px`, top: `${node.y}px` }}
-              onClick={() => selectNode(node)}
-              onPointerDown={(event) => {
-                event.currentTarget.setPointerCapture(event.pointerId);
-              }}
-              onPointerMove={(event) => {
-                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                  updateNode(node.id, (current) => ({
-                    ...current,
-                    x: Math.max(0, current.x + event.movementX),
-                    y: Math.max(0, current.y + event.movementY),
-                  }));
-                }
-              }}
-            >
-              <span>{node.label}</span>
-              <small>
-                ×{node.config.replicas}
-                {node.type === "cache" && replaySnapshot ? ` · ${replaySnapshot.cacheHealth}` : ""}
-              </small>
-            </button>
-          ))}
+          {architecture.nodes.map((node) => {
+            const health = displayedSnapshot?.nodeHealth[node.id];
+            return (
+              <button
+                className={`editor-node ${selectedId === node.id ? "editor-node-selected" : ""} ${connectionSource === node.id ? "editor-node-connecting" : ""} ${health ? `editor-node-health-${health}` : ""}`}
+                key={node.id}
+                type="button"
+                style={{ left: `${node.x}px`, top: `${node.y}px` }}
+                onClick={() => selectNode(node)}
+                onPointerDown={(event) => {
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    updateNode(node.id, (current) => ({
+                      ...current,
+                      x: Math.max(0, current.x + event.movementX),
+                      y: Math.max(0, current.y + event.movementY),
+                    }));
+                  }
+                }}
+              >
+                <span className="editor-node-identity">
+                  <span>{node.label}</span>
+                  <small>×{node.config.replicas}</small>
+                </span>
+                {health && <strong className="node-health-label">{health}</strong>}
+              </button>
+            );
+          })}
           <p className="canvas-notice" role="status">
             {notice}
           </p>
@@ -366,6 +370,85 @@ export function ArchitectureEditor() {
                 }
               />
             </label>
+            {(["load-balancer", "api-server", "worker"] as ComponentType[]).includes(
+              selected.type,
+            ) && (
+              <>
+                <label className="config-field">
+                  Timeout (ms)
+                  <input
+                    type="number"
+                    min="1"
+                    value={selected.config.timeoutMs}
+                    onChange={(event) =>
+                      updateNode(selected.id, (node) => ({
+                        ...node,
+                        config: {
+                          ...node.config,
+                          timeoutMs: Math.max(1, Number(event.target.value)),
+                        },
+                      }))
+                    }
+                  />
+                </label>
+                <label className="config-field">
+                  Retry attempts
+                  <input
+                    type="number"
+                    min="0"
+                    max="10"
+                    value={selected.config.retries}
+                    onChange={(event) =>
+                      updateNode(selected.id, (node) => ({
+                        ...node,
+                        config: {
+                          ...node.config,
+                          retries: Math.min(10, Math.max(0, Number(event.target.value))),
+                        },
+                      }))
+                    }
+                  />
+                </label>
+              </>
+            )}
+            {(["primary-database", "read-replica"] as ComponentType[]).includes(selected.type) && (
+              <label className="config-field">
+                Connection limit
+                <input
+                  type="number"
+                  min="1"
+                  value={selected.config.connectionLimit}
+                  onChange={(event) =>
+                    updateNode(selected.id, (node) => ({
+                      ...node,
+                      config: {
+                        ...node.config,
+                        connectionLimit: Math.max(1, Number(event.target.value)),
+                      },
+                    }))
+                  }
+                />
+              </label>
+            )}
+            {selected.type === "queue" && (
+              <label className="config-field">
+                Queue capacity
+                <input
+                  type="number"
+                  min="1"
+                  value={selected.config.queueCapacity}
+                  onChange={(event) =>
+                    updateNode(selected.id, (node) => ({
+                      ...node,
+                      config: {
+                        ...node.config,
+                        queueCapacity: Math.max(1, Number(event.target.value)),
+                      },
+                    }))
+                  }
+                />
+              </label>
+            )}
             {selected.type === "cache" && (
               <>
                 <label className="config-field">
@@ -466,6 +549,11 @@ export function ArchitectureEditor() {
               {simulation.outcome === "failed" ? "Frozen: objective breach" : "Passed"}
             </strong>
             {replaySnapshot && (
+              <span className={`semantic-health semantic-health-${replaySnapshot.systemHealth}`}>
+                System {replaySnapshot.systemHealth}
+              </span>
+            )}
+            {replaySnapshot && (
               <div className="run-metrics">
                 <span>
                   Availability <b>{(replaySnapshot.availability * 100).toFixed(2)}%</b>
@@ -493,6 +581,24 @@ export function ArchitectureEditor() {
                 </span>
                 <span>
                   Evictions <b>{replaySnapshot.cacheEvictions.toLocaleString()}</b>
+                </span>
+                <span>
+                  Retry amplification <b>{replaySnapshot.retryAttempts.toLocaleString()}</b>
+                </span>
+                <span>
+                  Downstream load <b>{replaySnapshot.amplifiedLoad.toLocaleString()}/s</b>
+                </span>
+                <span>
+                  DB connections <b>{replaySnapshot.databaseConnections.toLocaleString()}</b>
+                </span>
+                <span>
+                  DB wait queue <b>{replaySnapshot.databaseQueue.toLocaleString()}</b>
+                </span>
+                <span>
+                  Message backlog <b>{replaySnapshot.queueBacklog.toLocaleString()}</b>
+                </span>
+                <span>
+                  Messages dropped <b>{replaySnapshot.droppedMessages.toLocaleString()}</b>
                 </span>
                 {replaySnapshot.hotKeyPressure > 0 && (
                   <span>
@@ -542,6 +648,9 @@ export function ArchitectureEditor() {
         {liveSnapshot && !simulation && (
           <section className="run-report" aria-label="Live simulation metrics">
             <p className="eyebrow">Running / {liveSnapshot.second}s</p>
+            <span className={`semantic-health semantic-health-${liveSnapshot.systemHealth}`}>
+              System {liveSnapshot.systemHealth}
+            </span>
             <div className="run-metrics">
               <span>
                 Availability <b>{(liveSnapshot.availability * 100).toFixed(2)}%</b>
@@ -570,6 +679,24 @@ export function ArchitectureEditor() {
                   {liveSnapshot.cacheMisses.toLocaleString()} /{" "}
                   {liveSnapshot.cacheEvictions.toLocaleString()}
                 </b>
+              </span>
+              <span>
+                Retry amplification <b>{liveSnapshot.retryAttempts.toLocaleString()}</b>
+              </span>
+              <span>
+                Downstream load <b>{liveSnapshot.amplifiedLoad.toLocaleString()}/s</b>
+              </span>
+              <span>
+                DB connections <b>{liveSnapshot.databaseConnections.toLocaleString()}</b>
+              </span>
+              <span>
+                DB wait queue <b>{liveSnapshot.databaseQueue.toLocaleString()}</b>
+              </span>
+              <span>
+                Message backlog <b>{liveSnapshot.queueBacklog.toLocaleString()}</b>
+              </span>
+              <span>
+                Messages dropped <b>{liveSnapshot.droppedMessages.toLocaleString()}</b>
               </span>
             </div>
           </section>
