@@ -1,4 +1,5 @@
 @import "@infraplay/ui/globals.css";
+@import "./tycoon.css";
 
 :root {
   --ink: #102235;

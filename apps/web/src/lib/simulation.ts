@@ -1,6 +1,8 @@
 import {
   validateArchitecture,
   type Architecture,
+  type ArchitectureEdge,
+  type ArchitectureNode,
   type ComponentConfig,
   type Region,
 } from "./architecture";
@@ -20,12 +22,7 @@ export type Scenario = {
 };
 export type ScenarioIncident = {
   atSecond: number;
-  type:
-    | "hot-key"
-    | "cache-failure"
-    | "database-slowdown"
-    | "database-failure"
-    | "regional-latency";
+  type: "hot-key" | "cache-failure" | "database-slowdown" | "database-failure" | "regional-latency";
   region?: Region;
   durationSeconds?: number;
 };
@@ -52,7 +49,42 @@ export type SimulationCommand =
       nodeId: string;
       replicaDelta: number;
       deploymentDelaySeconds: number;
+    }
+  | {
+      atSecond: number;
+      type: "add-node";
+      node: ArchitectureNode;
+      deploymentDelaySeconds: number;
+    }
+  | {
+      atSecond: number;
+      type: "remove-node";
+      nodeId: string;
+      deploymentDelaySeconds: number;
+    }
+  | {
+      atSecond: number;
+      type: "connect";
+      edge: ArchitectureEdge;
+      deploymentDelaySeconds: number;
+    }
+  | {
+      atSecond: number;
+      type: "disconnect";
+      edgeId: string;
+      deploymentDelaySeconds: number;
+    }
+  | {
+      atSecond: number;
+      type: "incident";
+      incident: Omit<ScenarioIncident, "atSecond">;
+      deploymentDelaySeconds: number;
     };
+
+type EngineSimulationCommand = Extract<
+  SimulationCommand,
+  { type: "traffic" | "configure" | "capacity" }
+>;
 export type PendingDeployment =
   | {
       kind: "capacity";
@@ -174,20 +206,17 @@ export function runSimulation(
   commands: SimulationCommand[] = [],
   seed = 1,
 ): SimulationResult {
+  const engineCommands = commands.filter(isEngineCommand);
   const validation = validateArchitecture(architecture);
   if (!validation.runnable)
     return result(validation, [], [], "invalid", undefined, seed, architecture, scenario);
   const design = structuredClone(architecture);
   const reachable = reachableNodeIds(design);
-  const nodes = design.nodes.filter(
-    (node) => node.type !== "client" && reachable.has(node.id),
-  );
+  const nodes = design.nodes.filter((node) => node.type !== "client" && reachable.has(node.id));
   const cache = nodes.find((node) => node.type === "cache");
   const database = nodes.find((node) => node.type === "primary-database") ?? nodes[0]!;
   const queueNode = nodes.find((node) => node.type === "queue");
-  const queueTrafficShare = queueNode
-    ? trafficShareReachingNode(design, queueNode.id)
-    : 0;
+  const queueTrafficShare = queueNode ? trafficShareReachingNode(design, queueNode.id) : 0;
   const queueDescendants = queueNode ? descendantNodeIds(design, queueNode.id) : new Set();
   const workerNodes = nodes.filter(
     (node) => node.type === "worker" && queueDescendants.has(node.id),
@@ -223,9 +252,7 @@ export function runSimulation(
   let retriesWereActive = false;
   let objectiveBreached = false;
   for (let second = 0; second < scenario.durationSeconds; second += 1) {
-    let removedCapacity:
-      | { nodeId: string; activeReplicas: number }
-      | undefined;
+    let removedCapacity: { nodeId: string; activeReplicas: number } | undefined;
     const readyDeployments = pendingDeployments.filter(
       (deployment) => deployment.readyAtSecond === second,
     );
@@ -239,10 +266,7 @@ export function runSimulation(
         node.config = { ...node.config, ...deployment.changes };
       } else {
         const previousReplicas = activeReplicas[node.id] ?? node.config.replicas;
-        activeReplicas[node.id] = Math.max(
-          0,
-          previousReplicas + deployment.replicaDelta,
-        );
+        activeReplicas[node.id] = Math.max(0, previousReplicas + deployment.replicaDelta);
         if (deployment.replicaDelta < 0) {
           removedCapacity = {
             nodeId: node.id,
@@ -252,9 +276,10 @@ export function runSimulation(
       }
       events.push({
         second,
-        type: deployment.kind === "capacity" && deployment.replicaDelta < 0
-          ? "capacity-removed"
-          : "deployment-applied",
+        type:
+          deployment.kind === "capacity" && deployment.replicaDelta < 0
+            ? "capacity-removed"
+            : "deployment-applied",
         nodeId: node.id,
         message:
           deployment.kind === "capacity" && deployment.replicaDelta < 0
@@ -262,7 +287,7 @@ export function runSimulation(
             : `${node.label} deployment becomes active.`,
       });
     }
-    for (const command of commands.filter((item) => item.atSecond === second)) {
+    for (const command of engineCommands.filter((item) => item.atSecond === second)) {
       if (command.type === "traffic") continue;
       pendingDeployments.push(
         command.type === "capacity"
@@ -282,7 +307,7 @@ export function runSimulation(
             },
       );
     }
-    const trafficCommand = commands
+    const trafficCommand = engineCommands
       .filter(
         (item): item is Extract<SimulationCommand, { type: "traffic" }> =>
           item.atSecond <= second && item.type === "traffic",
@@ -413,9 +438,7 @@ export function runSimulation(
     const removedNode = removedCapacity
       ? nodes.find((node) => node.id === removedCapacity.nodeId)
       : undefined;
-    const removedRouteShare = removedNode
-      ? trafficShareReachingNode(design, removedNode.id)
-      : 0;
+    const removedRouteShare = removedNode ? trafficShareReachingNode(design, removedNode.id) : 0;
     const previousRoutedDemand = (previousSnapshot?.offered ?? 0) * removedRouteShare;
     const remainingNodeCapacity = removedNode
       ? effectiveCapacity(
@@ -436,9 +459,9 @@ export function runSimulation(
       Math.ceil((previousSnapshot?.inFlight ?? 0) * removedRouteShare * removalShortfallShare),
     );
     if (removedCapacity) {
-      const removalEvent = [...events].reverse().find(
-        (event) => event.second === second && event.type === "capacity-removed",
-      );
+      const removalEvent = [...events]
+        .reverse()
+        .find((event) => event.second === second && event.type === "capacity-removed");
       if (removalEvent) {
         removalEvent.message = `${removedNode?.label ?? "Component"} removes active capacity; ${removalDropped.toLocaleString()} routed in-flight requests fail from the resulting shortfall.`;
       }
@@ -461,15 +484,13 @@ export function runSimulation(
       (database.config.connectionLimit * (activeReplicas[database.id] ?? 0) * 4000) /
         databaseServiceTimeMs,
     );
-    const databaseCapacity = databaseFailed || (activeReplicas[database.id] ?? 0) <= 0
-      ? 0
-      : Math.max(
-          1,
-          Math.min(
-            capacityFor(database, databaseServiceTimeMs),
-            Math.max(1, connectionCapacity),
-          ),
-        );
+    const databaseCapacity =
+      databaseFailed || (activeReplicas[database.id] ?? 0) <= 0
+        ? 0
+        : Math.max(
+            1,
+            Math.min(capacityFor(database, databaseServiceTimeMs), Math.max(1, connectionCapacity)),
+          );
     const cacheCapacity =
       cache && !cacheFailed ? capacityFor(cache) * (1 - hotKeyPressure * 0.5) : 0;
     const routedTransportNodes = transportNodes;
@@ -478,9 +499,7 @@ export function runSimulation(
           Math.min(
             ...routedTransportNodes.map((node) => {
               const trafficShare = trafficShareReachingNode(design, node.id);
-              return trafficShare > 0
-                ? capacityFor(node) / trafficShare
-                : Number.POSITIVE_INFINITY;
+              return trafficShare > 0 ? capacityFor(node) / trafficShare : Number.POSITIVE_INFINITY;
             }),
           ),
         )
@@ -534,8 +553,7 @@ export function runSimulation(
         : queueNode && queueTrafficShare > 0 && messageDemand > admittedMessages
           ? (workerNodes[0] ?? queueNode)
           : transportNodes.reduce(
-              (lowest, node) =>
-                capacityFor(node) < capacityFor(lowest) ? node : lowest,
+              (lowest, node) => (capacityFor(node) < capacityFor(lowest) ? node : lowest),
               transportNodes[0] ?? database,
             );
     const inFlight = Math.min(Math.ceil(admitted * 0.1), admitted);
@@ -543,17 +561,15 @@ export function runSimulation(
     const requestExcess = Math.max(0, requestDemand - admittedRequests);
     const messageExcess = Math.max(0, messageDemand - admittedMessages);
     const excess = requestExcess + messageExcess;
-    const timeoutQueueBudget = Math.max(
-      0,
-      Math.floor(requestCapacity * (requestTimeoutMs / 1000)),
-    );
+    const timeoutQueueBudget = Math.max(0, Math.floor(requestCapacity * (requestTimeoutMs / 1000)));
     const timedOut = Math.min(
       requestExcess,
       Math.max(0, previousRequestBacklog - timeoutQueueBudget),
     );
-    const queueBudget = queueNode && queueTrafficShare > 0
-      ? queueNode.config.queueCapacity * (activeReplicas[queueNode.id] ?? 0)
-      : 20_000;
+    const queueBudget =
+      queueNode && queueTrafficShare > 0
+        ? queueNode.config.queueCapacity * (activeReplicas[queueNode.id] ?? 0)
+        : 20_000;
     const droppedMessages =
       queueNode && queueTrafficShare > 0 ? Math.max(0, messageExcess - queueBudget) : 0;
     const droppedRequests = Math.max(0, requestExcess - timedOut - 20_000);
@@ -591,10 +607,8 @@ export function runSimulation(
     );
     const cost = Number(
       (
-        nodes.reduce(
-          (sum, node) => sum + componentCost(node, activeReplicas[node.id] ?? 0),
-          0,
-        ) + regionalCost
+        nodes.reduce((sum, node) => sum + componentCost(node, activeReplicas[node.id] ?? 0), 0) +
+        regionalCost
       ).toFixed(2),
     );
     if (excess > 0 && !firstSaturatedNodeId) {
@@ -637,8 +651,7 @@ export function runSimulation(
       const pendingDelta = pendingDeployments
         .filter((deployment) => deployment.nodeId === node.id)
         .reduce(
-          (sum, deployment) =>
-            sum + (deployment.kind === "capacity" ? deployment.replicaDelta : 0),
+          (sum, deployment) => sum + (deployment.kind === "capacity" ? deployment.replicaDelta : 0),
           0,
         );
       const projectedReplicas = (activeReplicas[node.id] ?? 0) + pendingDelta;
@@ -685,7 +698,7 @@ export function runSimulation(
       droppedMessages,
       recoveredDatabase: Boolean(
         recoveredIncident &&
-          ["database-slowdown", "database-failure"].includes(recoveredIncident.type),
+        ["database-slowdown", "database-failure"].includes(recoveredIncident.type),
       ),
       recoveredRegion:
         recoveredIncident?.type === "regional-latency" ? recoveredIncident.region : undefined,
@@ -767,6 +780,149 @@ export function runSimulation(
   );
 }
 
+export type SimulationSession = {
+  architecture: Architecture;
+  scenario: Scenario;
+  commands: SimulationCommand[];
+  seed: number;
+  second: number;
+  result: SimulationResult;
+};
+
+export type SimulationStep = {
+  session: SimulationSession;
+  snapshot?: Snapshot;
+  events: SimulationEvent[];
+  complete: boolean;
+};
+
+export function createSimulationSession(input: {
+  architecture: Architecture;
+  scenario?: Scenario;
+  commands?: SimulationCommand[];
+  seed?: number;
+}): SimulationSession {
+  const scenario = input.scenario ?? starterScenario;
+  const commands = input.commands ?? [];
+  const seed = input.seed ?? 1;
+  return {
+    architecture: structuredClone(input.architecture),
+    scenario: structuredClone(scenario),
+    commands: structuredClone(commands),
+    seed,
+    second: -1,
+    result: runSimulation(input.architecture, scenario, commands, seed),
+  };
+}
+
+export function stepSimulation(
+  current: SimulationSession,
+  commands: SimulationCommand[] = [],
+): SimulationStep {
+  const nextCommands = commands.length > 0 ? [...current.commands, ...commands] : current.commands;
+  const nextSecond = Math.min(current.second + 1, current.scenario.durationSeconds - 1);
+  const activatingCommands = nextCommands.filter(
+    (command): command is Exclude<SimulationCommand, EngineSimulationCommand> =>
+      isSessionCommand(command) &&
+      command.atSecond + Math.max(0, command.deploymentDelaySeconds) === nextSecond,
+  );
+  const architecture = structuredClone(current.architecture);
+  const scenario = structuredClone(current.scenario);
+  for (const command of activatingCommands) applySessionCommand(architecture, scenario, command);
+  const recomputed =
+    activatingCommands.length > 0 || commands.some(isEngineCommand)
+      ? runSimulation(architecture, scenario, nextCommands, current.seed)
+      : current.result;
+  const result =
+    activatingCommands.length > 0
+      ? preserveSimulationHistory(current.result, recomputed, current.second)
+      : recomputed;
+  const second = Math.min(nextSecond, Math.max(0, result.snapshots.length - 1));
+  const session = { ...current, architecture, scenario, commands: nextCommands, result, second };
+  return {
+    session,
+    snapshot: result.snapshots[second],
+    events: result.events.filter((event) => event.second === second),
+    complete: second >= result.snapshots.length - 1,
+  };
+}
+
+export function queueSimulationCommands(
+  current: SimulationSession,
+  commands: SimulationCommand[],
+): SimulationSession {
+  if (commands.length === 0) return current;
+  const nextCommands = [...current.commands, ...commands];
+  const result = commands.some(isEngineCommand)
+    ? preserveSimulationHistory(
+        current.result,
+        runSimulation(current.architecture, current.scenario, nextCommands, current.seed),
+        current.second,
+      )
+    : current.result;
+  return { ...current, commands: nextCommands, result };
+}
+
+function isEngineCommand(command: SimulationCommand): command is EngineSimulationCommand {
+  return ["traffic", "configure", "capacity"].includes(command.type);
+}
+
+function isSessionCommand(
+  command: SimulationCommand,
+): command is Exclude<SimulationCommand, EngineSimulationCommand> {
+  return !isEngineCommand(command);
+}
+
+function applySessionCommand(
+  architecture: Architecture,
+  scenario: Scenario,
+  command: Exclude<SimulationCommand, EngineSimulationCommand>,
+) {
+  if (command.type === "add-node") {
+    if (!architecture.nodes.some((node) => node.id === command.node.id)) {
+      architecture.nodes.push(structuredClone(command.node));
+    }
+  } else if (command.type === "remove-node") {
+    architecture.nodes = architecture.nodes.filter((node) => node.id !== command.nodeId);
+    architecture.edges = architecture.edges.filter(
+      (edge) => edge.source !== command.nodeId && edge.target !== command.nodeId,
+    );
+  } else if (command.type === "connect") {
+    if (!architecture.edges.some((edge) => edge.id === command.edge.id)) {
+      architecture.edges.push(structuredClone(command.edge));
+    } else {
+      architecture.edges = architecture.edges.map((edge) =>
+        edge.id === command.edge.id ? structuredClone(command.edge) : edge,
+      );
+    }
+  } else if (command.type === "disconnect") {
+    architecture.edges = architecture.edges.filter((edge) => edge.id !== command.edgeId);
+  } else if (command.type === "incident") {
+    scenario.incidents = [
+      ...(scenario.incidents ?? []),
+      { ...command.incident, atSecond: command.atSecond + command.deploymentDelaySeconds },
+    ];
+  }
+}
+
+function preserveSimulationHistory(
+  previous: SimulationResult,
+  recomputed: SimulationResult,
+  throughSecond: number,
+): SimulationResult {
+  return {
+    ...recomputed,
+    snapshots: [
+      ...previous.snapshots.filter((snapshot) => snapshot.second <= throughSecond),
+      ...recomputed.snapshots.filter((snapshot) => snapshot.second > throughSecond),
+    ],
+    events: [
+      ...previous.events.filter((event) => event.second <= throughSecond),
+      ...recomputed.events.filter((event) => event.second > throughSecond),
+    ],
+  };
+}
+
 function result(
   validation: ReturnType<typeof validateArchitecture>,
   snapshots: Snapshot[],
@@ -799,10 +955,7 @@ function effectiveCapacity(
 ) {
   if (replicas <= 0) return 0;
   const serviceLimit = (node.config.concurrency * 1000) / serviceTimeMs;
-  return Math.max(
-    1,
-    Math.floor(Math.min(node.config.capacity, serviceLimit) * replicas),
-  );
+  return Math.max(1, Math.floor(Math.min(node.config.capacity, serviceLimit) * replicas));
 }
 
 function incidentDuration(incident: ScenarioIncident) {
@@ -851,7 +1004,10 @@ function buildNodeHealth(input: NodeHealthInput): Record<string, SemanticHealth>
   for (const node of input.nodes) {
     const utilization =
       (input.nodeDemand[node.id] ?? 0) /
-      Math.max(1, effectiveCapacity(node, node.config.serviceTimeMs, input.activeReplicas[node.id]));
+      Math.max(
+        1,
+        effectiveCapacity(node, node.config.serviceTimeMs, input.activeReplicas[node.id]),
+      );
     if (utilization >= 0.75) health[node.id] = "heating";
   }
   for (const node of input.nodes) {
@@ -917,8 +1073,7 @@ function calculateRouteAllocations(
       const totalWeight = outgoing.reduce((sum, candidate) => sum + candidate.weight, 0);
       const sourceShare =
         clients.reduce(
-          (share, client) =>
-            share + trafficShareBetweenNodes(architecture, client.id, edge.source),
+          (share, client) => share + trafficShareBetweenNodes(architecture, client.id, edge.source),
           0,
         ) / clients.length;
       const normalizedWeight = edge.weight / totalWeight;
@@ -997,11 +1152,7 @@ function pathNetworkFromNode(
   });
 }
 
-function networkLatencyBetween(
-  source: Region,
-  target: Region,
-  affectedRegions: Set<Region>,
-) {
+function networkLatencyBetween(source: Region, target: Region, affectedRegions: Set<Region>) {
   const baseLatency = REGION_LATENCY_MS[source][target];
   return baseLatency + (affectedRegions.has(source) || affectedRegions.has(target) ? 120 : 0);
 }
@@ -1018,11 +1169,9 @@ function trafficShareReachingNode(architecture: Architecture, targetId: string) 
   if (clients.length === 0) return 0;
   return (
     clients.reduce(
-      (share, client) =>
-        share + trafficShareBetweenNodes(architecture, client.id, targetId),
+      (share, client) => share + trafficShareBetweenNodes(architecture, client.id, targetId),
       0,
-    ) /
-    clients.length
+    ) / clients.length
   );
 }
 
@@ -1057,9 +1206,7 @@ function descendantNodeIds(architecture: Architecture, sourceId: string) {
     if (descendants.has(nodeId)) continue;
     descendants.add(nodeId);
     pending.push(
-      ...architecture.edges
-        .filter((edge) => edge.source === nodeId)
-        .map((edge) => edge.target),
+      ...architecture.edges.filter((edge) => edge.source === nodeId).map((edge) => edge.target),
     );
   }
   return descendants;
