@@ -37,7 +37,7 @@ export function ScoredChallengePanel({
       </div>
       <p className="scored-challenge-note">
         Fixed seed · unpausable · no traffic or incident changes after launch. The schedule includes
-        a spike, hot URL, cache failure, database slowdown and failure, and regional latency.
+        a spike, hot URL, cache failure, database slowdown, and regional latency.
       </p>
       {history.attempts.length > 0 && (
         <div className="attempt-summary">

@@ -23,9 +23,8 @@ export const scoredChallengeScenario: Scenario = {
     { atSecond: 18, type: "hot-key", durationSeconds: 6 },
     { atSecond: 28, type: "cache-failure", durationSeconds: 5 },
     { atSecond: 38, type: "database-slowdown", durationSeconds: 5 },
-    { atSecond: 48, type: "database-failure", durationSeconds: 4 },
     {
-      atSecond: 59,
+      atSecond: 52,
       type: "regional-latency",
       region: "us-east",
       durationSeconds: 5,
@@ -75,7 +74,9 @@ const SCORE_RUBRIC: Record<ScoreFactorKey, { label: string; possible: number }> 
   recovery: { label: "Incident recovery", possible: 150 },
   cost: { label: "Cost discipline", possible: 200 },
 };
-const RECOVERY_TARGET = 3;
+const RECOVERY_TARGET = (scoredChallengeScenario.incidents ?? []).filter((incident) =>
+  ["database-slowdown", "database-failure", "regional-latency"].includes(incident.type),
+).length;
 const MAX_OVERPROVISIONING_PENALTY = 200;
 
 export function runScoredChallenge(

@@ -19,7 +19,7 @@ test("the scored challenge runs the complete fixed incident schedule determinist
   assert.equal(first.simulation.snapshots.length, scoredChallengeScenario.durationSeconds);
   assert.deepEqual(
     scoredChallengeScenario.incidents?.map((incident) => incident.type),
-    ["hot-key", "cache-failure", "database-slowdown", "database-failure", "regional-latency"],
+    ["hot-key", "cache-failure", "database-slowdown", "regional-latency"],
   );
   assert.ok(scoredChallengeCommands.some((command) => command.type === "traffic"));
   assert.equal(first.score.total >= 0 && first.score.total <= 1000, true);

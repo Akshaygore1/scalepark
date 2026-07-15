@@ -924,7 +924,7 @@ export function ArchitectureEditor() {
           <p className="panel-intro">Choose a component on the canvas to configure it.</p>
         )}
         {!validation.runnable && (
-          <ul className="validation-errors">
+          <ul className="validation-errors" aria-live="assertive">
             {validation.errors.map((error) => (
               <li key={error}>{error}</li>
             ))}
@@ -1005,7 +1005,7 @@ export function ArchitectureEditor() {
           </select>
         </label>
         {simulation && (
-          <section className="run-report" aria-label="Simulation result">
+          <section className="run-report" aria-label="Simulation result" aria-live="polite">
             <p className="eyebrow">Latest run</p>
             <strong
               className={simulation.outcome === "failed" ? "validation-bad" : "validation-good"}
@@ -1022,7 +1022,7 @@ export function ArchitectureEditor() {
               </span>
             )}
             {replaySnapshot && (
-              <div className="run-metrics">
+              <div className="run-metrics" aria-label="Replay metrics">
                 <span>
                   Availability <b>{(replaySnapshot.availability * 100).toFixed(2)}%</b>
                 </span>
@@ -1126,12 +1126,12 @@ export function ArchitectureEditor() {
           </section>
         )}
         {liveSnapshot && !simulation && (
-          <section className="run-report" aria-label="Live simulation metrics">
+          <section className="run-report" aria-label="Live simulation metrics" aria-live="polite">
             <p className="eyebrow">Running / {liveSnapshot.second}s</p>
             <span className={`semantic-health semantic-health-${liveSnapshot.systemHealth}`}>
               System {liveSnapshot.systemHealth}
             </span>
-            <div className="run-metrics">
+            <div className="run-metrics" aria-label="Live metrics">
               <span>
                 Availability <b>{(liveSnapshot.availability * 100).toFixed(2)}%</b>
               </span>
