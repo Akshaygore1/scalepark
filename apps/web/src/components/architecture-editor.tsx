@@ -15,6 +15,7 @@ import {
   type ComponentType,
 } from "@/lib/architecture";
 import type { SimulationResult, Snapshot } from "@/lib/simulation";
+import { explainFailure } from "@/lib/simulation";
 
 const typeNames: Record<ComponentType, string> = {
   client: "Client",
@@ -42,8 +43,13 @@ export function ArchitectureEditor() {
   const [notice, setNotice] = useState("Select a component to inspect it.");
   const [simulation, setSimulation] = useState<SimulationResult | null>(null);
   const [liveSnapshot, setLiveSnapshot] = useState<Snapshot | null>(null);
+  const [replaySecond, setReplaySecond] = useState<number | null>(null);
   const selected = architecture.nodes.find((node) => node.id === selectedId);
   const validation = useMemo(() => validateArchitecture(architecture), [architecture]);
+  const replaySnapshot =
+    simulation?.snapshots.find((snapshot) => snapshot.second === replaySecond) ??
+    simulation?.snapshots.at(-1);
+  const failure = simulation ? explainFailure(simulation) : null;
   const importInput = useRef<HTMLInputElement>(null);
   const worker = useRef<Worker | null>(null);
 
@@ -232,7 +238,7 @@ export function ArchitectureEditor() {
           </svg>
           {architecture.nodes.map((node) => (
             <button
-              className={`editor-node ${selectedId === node.id ? "editor-node-selected" : ""} ${connectionSource === node.id ? "editor-node-connecting" : ""}`}
+              className={`editor-node ${selectedId === node.id ? "editor-node-selected" : ""} ${connectionSource === node.id ? "editor-node-connecting" : ""} ${simulation?.firstSaturatedNodeId === node.id ? "editor-node-saturated" : ""}`}
               key={node.id}
               type="button"
               style={{ left: `${node.x}px`, top: `${node.y}px` }}
@@ -401,26 +407,53 @@ export function ArchitectureEditor() {
             >
               {simulation.outcome === "failed" ? "Frozen: objective breach" : "Passed"}
             </strong>
-            {simulation.snapshots.at(-1) && (
+            {replaySnapshot && (
               <div className="run-metrics">
                 <span>
-                  Availability{" "}
-                  <b>{(simulation.snapshots.at(-1)!.availability * 100).toFixed(2)}%</b>
+                  Availability <b>{(replaySnapshot.availability * 100).toFixed(2)}%</b>
                 </span>
                 <span>
-                  p95 <b>{simulation.snapshots.at(-1)!.p95LatencyMs}ms</b>
+                  p95 <b>{replaySnapshot.p95LatencyMs}ms</b>
                 </span>
                 <span>
-                  Throughput <b>{simulation.snapshots.at(-1)!.throughput.toLocaleString()}/s</b>
+                  Throughput <b>{replaySnapshot.throughput.toLocaleString()}/s</b>
                 </span>
                 <span>
-                  Queue <b>{simulation.snapshots.at(-1)!.queued.toLocaleString()}</b>
+                  Queue <b>{replaySnapshot.queued.toLocaleString()}</b>
                 </span>
                 <span>
-                  Cost <b>${simulation.snapshots.at(-1)!.cost}/h</b>
+                  Cost <b>${replaySnapshot.cost}/h</b>
                 </span>
               </div>
             )}
+            {failure && (
+              <div className="failure-evidence">
+                <p>
+                  First saturation:{" "}
+                  <b>
+                    {architecture.nodes.find((node) => node.id === failure.firstSaturatedNodeId)
+                      ?.label ?? "unknown component"}
+                  </b>
+                </p>
+                <p>
+                  Queue growth {failure.queueGrowth.toLocaleString()} · latency +
+                  {failure.propagatedLatencyMs}ms · {failure.successfulTraffic.toLocaleString()}{" "}
+                  completed · {failure.dropped.toLocaleString()} dropped ·{" "}
+                  {failure.timedOut.toLocaleString()} timed out.
+                </p>
+                <p>{failure.cause}</p>
+              </div>
+            )}
+            <label className="replay-control">
+              Replay second{" "}
+              <input
+                type="range"
+                min="0"
+                max={simulation.snapshots.at(-1)?.second ?? 0}
+                value={replaySecond ?? simulation.snapshots.at(-1)?.second ?? 0}
+                onChange={(event) => setReplaySecond(Number(event.target.value))}
+              />
+            </label>
             <ol className="run-events">
               {simulation.events.map((event) => (
                 <li key={`${event.second}-${event.type}`}>

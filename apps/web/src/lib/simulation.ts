@@ -43,6 +43,17 @@ export type SimulationResult = {
   scenarioVersion: number;
 };
 
+export type FailureReport = {
+  frozenAtSecond: number;
+  firstSaturatedNodeId?: string;
+  queueGrowth: number;
+  propagatedLatencyMs: number;
+  successfulTraffic: number;
+  dropped: number;
+  timedOut: number;
+  cause: string;
+};
+
 export const starterScenario: Scenario = {
   version: 1,
   durationSeconds: 60,
@@ -191,4 +202,25 @@ function effectiveCapacity(node: Architecture["nodes"][number]) {
     1,
     Math.floor(Math.min(node.config.capacity, serviceLimit) * node.config.replicas),
   );
+}
+
+export function explainFailure(result: SimulationResult): FailureReport | null {
+  if (result.outcome !== "failed" || result.snapshots.length === 0) return null;
+  const frozen = result.snapshots.at(-1)!;
+  const before = result.snapshots[0]!;
+  return {
+    frozenAtSecond: frozen.second,
+    firstSaturatedNodeId: result.firstSaturatedNodeId,
+    queueGrowth: frozen.queued - before.queued,
+    propagatedLatencyMs: frozen.p95LatencyMs - before.p95LatencyMs,
+    successfulTraffic: frozen.successful,
+    dropped: frozen.dropped,
+    timedOut: frozen.timedOut,
+    cause:
+      frozen.timedOut > 0
+        ? "Work waited beyond the timeout while the saturated path drained its queue."
+        : frozen.dropped > 0
+          ? "Demand exceeded the finite queue budget after the saturated path filled."
+          : "Demand exceeded the first saturated component’s finite capacity and accumulated in its queue.",
+  };
 }

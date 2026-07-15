@@ -292,6 +292,10 @@ button {
 .editor-node-connecting {
   background: var(--blue-pale);
 }
+.editor-node-saturated {
+  border-color: #c47623;
+  box-shadow: 0 0 0 3px #fff0d5;
+}
 .editor-node small {
   color: var(--ink-soft);
 }
@@ -416,6 +420,31 @@ button {
   color: var(--ink-soft);
   font-size: 9px;
   line-height: 1.5;
+}
+.failure-evidence {
+  margin-top: 12px;
+  padding: 9px;
+  background: #fff4df;
+  color: #79521d;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.failure-evidence p {
+  margin: 0 0 6px;
+}
+.failure-evidence p:last-child {
+  margin-bottom: 0;
+}
+.replay-control {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.replay-control input {
+  width: 100%;
 }
 .run-events span {
   margin-right: 5px;

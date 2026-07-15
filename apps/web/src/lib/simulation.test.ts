@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { starterArchitecture } from "./architecture";
-import { runSimulation } from "./simulation";
+import { explainFailure, runSimulation } from "./simulation";
 
 test("starter scenario deterministically fails on its first spike", () => {
   const architecture = starterArchitecture();
@@ -11,6 +11,18 @@ test("starter scenario deterministically fails on its first spike", () => {
   assert.deepEqual(first, second);
   assert.equal(first.outcome, "failed");
   assert.ok(first.events.some((event) => event.type === "saturation"));
+});
+
+test("failure explanation freezes numerical evidence without prescribing a repair", () => {
+  const report = explainFailure(runSimulation(starterArchitecture()));
+  assert.ok(report);
+  assert.ok(report!.firstSaturatedNodeId);
+  assert.ok(report!.queueGrowth >= 0);
+  assert.ok(
+    report!.cause.includes("capacity") ||
+      report!.cause.includes("timeout") ||
+      report!.cause.includes("queue"),
+  );
 });
 
 test("each tick accounts for offered work through success, queue, drop, or timeout", () => {
