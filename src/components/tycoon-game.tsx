@@ -4,7 +4,6 @@ import {
   Banknote,
   BookOpen,
   Boxes,
-  Cable,
   CircleDollarSign,
   CircleCheck,
   CircleDashed,
@@ -32,17 +31,20 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { Link, useNavigate } from "react-router";
 
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -187,6 +189,10 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   const pendingDisconnectionIds = useMemo(
     () => new Set(pendingDisconnections.map((disconnection) => disconnection.edgeId)),
     [pendingDisconnections],
+  );
+  const pendingRemovalIds = useMemo(
+    () => new Set(pendingRemovals.map((removal) => removal.nodeId)),
+    [pendingRemovals],
   );
   const previewResult = useMemo(
     () => runSimulation(architecture, currentChapter.scenario, [], CAMPAIGN_SIMULATION_SEED),
@@ -601,16 +607,31 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   }
 
   function connectRoute(sourceId: string, targetId: string) {
-    if (sourceId === targetId) return;
+    const source = architecture.nodes.find((node) => node.id === sourceId);
+    const target = architecture.nodes.find((node) => node.id === targetId);
+    if (!source || !target) return false;
+    if (sourceId === targetId) {
+      setNotice("A component cannot route traffic to itself.");
+      return false;
+    }
+    if (pendingRemovalIds.has(sourceId) || pendingRemovalIds.has(targetId)) {
+      setNotice("Wait for the pending component removal before changing its routes.");
+      return false;
+    }
     const exists = architecture.edges.some(
       (edge) => edge.source === sourceId && edge.target === targetId,
     );
     if (exists) {
       setNotice("That traffic route is already active.");
-      return;
+      return false;
     }
-    const target = architecture.nodes.find((node) => node.id === targetId);
-    if (!target) return;
+    const pending = pendingRoutes.some(
+      ({ edge }) => edge.source === sourceId && edge.target === targetId,
+    );
+    if (pending) {
+      setNotice("That traffic route is already deploying.");
+      return false;
+    }
     const edge = {
       id: crypto.randomUUID(),
       source: sourceId,
@@ -622,7 +643,9 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
         { ...architecture, edges: [...architecture.edges, edge] },
         `Route to ${target.label} added to the opening plan.`,
       );
-      return;
+      setSelectedId(target.id);
+      setConnectionSource(null);
+      return true;
     }
     setPendingRoutes((current) => [...current, { edge, readyAt: game.second + 2 }]);
     postCommands([
@@ -634,14 +657,57 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
       },
     ]);
     setNotice(`Traffic route to ${target.label} deploys in 2 simulated seconds.`);
+    setSelectedId(target.id);
+    setConnectionSource(null);
+    return true;
   }
 
   function selectNode(node: ArchitectureNode) {
-    if (connectionSource && connectionSource !== node.id) {
-      connectRoute(connectionSource, node.id);
-      setConnectionSource(null);
+    if (connectionSource) {
+      if (connectionSource === node.id) {
+        setConnectionSource(null);
+        setNotice("Connection cancelled.");
+        return;
+      }
+      if (connectRoute(connectionSource, node.id)) return;
     }
     setSelectedId(node.id);
+  }
+
+  function beginConnection(sourceId: string) {
+    if (connectionSource === sourceId) {
+      setConnectionSource(null);
+      setNotice("Connection cancelled.");
+      return;
+    }
+    const source = architecture.nodes.find((node) => node.id === sourceId);
+    if (!source || pendingRemovalIds.has(sourceId)) {
+      setNotice("Wait for the pending component removal before changing its routes.");
+      return;
+    }
+    const hasDestination = architecture.nodes.some(
+      (node) =>
+        node.id !== sourceId &&
+        !pendingRemovalIds.has(node.id) &&
+        !architecture.edges.some(
+          (edge) => edge.source === sourceId && edge.target === node.id,
+        ) &&
+        !pendingRoutes.some(
+          ({ edge }) => edge.source === sourceId && edge.target === node.id,
+        ),
+    );
+    if (!hasDestination) {
+      setNotice(`No available destinations for ${source.label}.`);
+      return;
+    }
+    setSelectedId(sourceId);
+    setConnectionSource(sourceId);
+    setNotice(`Choose a destination for ${source.label}. Press Escape to cancel.`);
+  }
+
+  function cancelConnection() {
+    setConnectionSource(null);
+    setNotice("Connection cancelled.");
   }
 
   function addReplica(replicaDelta: number) {
@@ -1016,9 +1082,14 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
           connectionSource={connectionSource}
           pendingBuilds={pendingBuilds}
           pendingDisconnectionIds={pendingDisconnectionIds}
+          pendingRemovalIds={pendingRemovalIds}
+          pendingRoutes={pendingRoutes}
           selectedId={selectedId}
           snapshot={snapshot}
           onBuild={build}
+          onCancelConnection={cancelConnection}
+          onConnect={connectRoute}
+          onConnectionSource={beginConnection}
           onDisconnectRoute={disconnectRoute}
           onMove={moveNode}
           onSelect={selectNode}
@@ -1027,17 +1098,9 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
         {selected && (
           <BuildingInspector
             cash={game.cash}
-            destinations={architecture.nodes.filter(
-              (node) =>
-                node.id !== selected.id &&
-                !architecture.edges.some(
-                  (edge) => edge.source === selected.id && edge.target === node.id,
-                ),
-            )}
             node={selected}
             snapshot={snapshot}
             onClose={() => setSelectedId("")}
-            onConnectTo={(targetId) => connectRoute(selected.id, targetId)}
             onReplica={addReplica}
             onRemove={removeSelected}
             routes={architecture.edges
@@ -1393,9 +1456,14 @@ function ParkMap({
   connectionSource,
   pendingBuilds,
   pendingDisconnectionIds,
+  pendingRemovalIds,
+  pendingRoutes,
   selectedId,
   snapshot,
   onBuild,
+  onCancelConnection,
+  onConnect,
+  onConnectionSource,
   onDisconnectRoute,
   onMove,
   onSelect,
@@ -1404,15 +1472,115 @@ function ParkMap({
   connectionSource: string | null;
   pendingBuilds: PendingBuild[];
   pendingDisconnectionIds: ReadonlySet<string>;
+  pendingRemovalIds: ReadonlySet<string>;
+  pendingRoutes: PendingRoute[];
   selectedId: string;
   snapshot?: Snapshot;
   onBuild: (type: ComponentType, position?: { x: number; y: number }) => void;
+  onCancelConnection: () => void;
+  onConnect: (sourceId: string, targetId: string) => boolean;
+  onConnectionSource: (sourceId: string) => void;
   onDisconnectRoute: (edgeId: string) => void;
   onMove: (nodeId: string, position: { x: number; y: number }) => void;
   onSelect: (node: ArchitectureNode) => void;
 }) {
   const [dropActive, setDropActive] = useState(false);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [connectionGesture, setConnectionGesture] = useState<{
+    sourceId: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    moved: boolean;
+    targetId: string | null;
+  } | null>(null);
+  const connectionGestureRef = useRef(connectionGesture);
+  const suppressConnectorClick = useRef<string | null>(null);
+  const activeConnectionSource = connectionGesture?.sourceId ?? connectionSource;
+  const isEligibleDestination = (sourceId: string, targetId: string) =>
+    sourceId !== targetId &&
+    !pendingRemovalIds.has(sourceId) &&
+    !pendingRemovalIds.has(targetId) &&
+    !architecture.edges.some(
+      (edge) => edge.source === sourceId && edge.target === targetId,
+    ) &&
+    !pendingRoutes.some(
+      ({ edge }) => edge.source === sourceId && edge.target === targetId,
+    );
+  const hasEligibleDestination = (sourceId: string) =>
+    architecture.nodes.some((node) => isEligibleDestination(sourceId, node.id));
+  const setGesture = (
+    gesture: typeof connectionGesture | ((current: typeof connectionGesture) => typeof connectionGesture),
+  ) => {
+    setConnectionGesture((current) => {
+      const next = typeof gesture === "function" ? gesture(current) : gesture;
+      connectionGestureRef.current = next;
+      return next;
+    });
+  };
+
+  function beginConnectorDrag(event: ReactPointerEvent<HTMLButtonElement>, sourceId: string) {
+    if (event.button !== 0 || !event.isPrimary || !hasEligibleDestination(sourceId)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    suppressConnectorClick.current = sourceId;
+    if (connectionSource === sourceId) {
+      onCancelConnection();
+      setGesture(null);
+      return;
+    }
+    const map = event.currentTarget.closest(".park-map");
+    if (!(map instanceof HTMLElement)) return;
+    const bounds = map.getBoundingClientRect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    onConnectionSource(sourceId);
+    setGesture({
+      sourceId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+      moved: false,
+      targetId: null,
+    });
+  }
+
+  function moveConnector(event: ReactPointerEvent<HTMLButtonElement>) {
+    const current = connectionGestureRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    const map = event.currentTarget.closest(".park-map");
+    if (!(map instanceof HTMLElement)) return;
+    const bounds = map.getBoundingClientRect();
+    const moved = current.moved || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) >= 4;
+    const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-node-id]");
+    const targetId = hovered?.dataset.nodeId ?? null;
+    setGesture({
+      ...current,
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+      moved,
+      targetId: targetId && isEligibleDestination(current.sourceId, targetId) ? targetId : null,
+    });
+  }
+
+  function finishConnector(event: ReactPointerEvent<HTMLButtonElement>) {
+    const current = connectionGestureRef.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setGesture(null);
+    if (!current.moved) return;
+    if (current.targetId && isEligibleDestination(current.sourceId, current.targetId)) {
+      onConnect(current.sourceId, current.targetId);
+    } else {
+      onCancelConnection();
+    }
+  }
   const paths = architecture.edges
     .map((edge) => {
       const source = architecture.nodes.find((node) => node.id === edge.source);
@@ -1454,6 +1622,17 @@ function ParkMap({
   }, [selectedEdgeId]);
 
   useEffect(() => {
+    if (!connectionSource) return;
+    const cancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setGesture(null);
+      onCancelConnection();
+    };
+    window.addEventListener("keydown", cancelOnEscape);
+    return () => window.removeEventListener("keydown", cancelOnEscape);
+  }, [connectionSource, onCancelConnection]);
+
+  useEffect(() => {
     if (!selectedEdgeId) return;
     const dismissOnOutsidePointer = (event: PointerEvent) => {
       if (event.target instanceof Element && event.target.closest(".route-action, .route-hitbox"))
@@ -1466,7 +1645,17 @@ function ParkMap({
 
   return (
     <div
-      className={`park-map ${dropActive ? "drop-active" : ""}`}
+      className={`park-map ${dropActive ? "drop-active" : ""} ${activeConnectionSource ? "choosing-destination" : ""}`}
+      onClick={(event) => {
+        if (!connectionSource) return;
+        if (
+          event.target instanceof Element &&
+          event.target.closest(".park-building, .route-action, .route-hitbox")
+        )
+          return;
+        setGesture(null);
+        onCancelConnection();
+      }}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes("application/x-scalelab-component")) return;
         event.preventDefault();
@@ -1495,6 +1684,19 @@ function ParkMap({
         <span>THE INTERNET</span>
       </div>
       <svg className="route-layer" role="group" aria-label="Active traffic routes">
+        <defs>
+          <marker
+            id="connection-preview-arrow"
+            markerHeight="8"
+            markerWidth="8"
+            orient="auto"
+            refX="7"
+            refY="4"
+            viewBox="0 0 8 8"
+          >
+            <path d="M0 0 8 4 0 8Z" />
+          </marker>
+        </defs>
         {paths.map(({ edge, source, target, d }) => {
           const allocation = snapshot?.routeAllocations.find(
             (route) => route.sourceNodeId === edge.source && route.targetNodeId === edge.target,
@@ -1556,6 +1758,21 @@ function ParkMap({
             </g>
           );
         })}
+        {connectionGesture?.moved && (() => {
+          const source = architecture.nodes.find((node) => node.id === connectionGesture.sourceId);
+          if (!source) return null;
+          const target = connectionGesture.targetId
+            ? architecture.nodes.find((node) => node.id === connectionGesture.targetId)
+            : null;
+          const end = target ? routeCenter(target) : { x: connectionGesture.x, y: connectionGesture.y };
+          return (
+            <path
+              className={`connection-preview ${target ? "valid" : ""}`}
+              d={routePreviewPath(routeOutput(source), end)}
+              markerEnd="url(#connection-preview-arrow)"
+            />
+          );
+        })()}
       </svg>
       {selectedPath && (
         <div
@@ -1591,12 +1808,33 @@ function ParkMap({
       </div>
       {architecture.nodes.map((node) => (
         <Building
-          connecting={connectionSource === node.id}
+          connecting={activeConnectionSource === node.id}
+          connectionEligible={
+            Boolean(activeConnectionSource) &&
+            isEligibleDestination(activeConnectionSource as string, node.id)
+          }
+          connectionTarget={connectionGesture?.targetId === node.id}
+          connectorDisabled={pendingRemovalIds.has(node.id) || !hasEligibleDestination(node.id)}
           health={snapshot?.nodeHealth[node.id]}
           key={node.id}
           node={node}
           replicas={snapshot?.activeReplicas[node.id] ?? node.config.replicas}
           selected={selectedId === node.id}
+          onConnectorClick={() => {
+            if (suppressConnectorClick.current === node.id) {
+              suppressConnectorClick.current = null;
+              return;
+            }
+            onConnectionSource(node.id);
+          }}
+          onConnectorPointerCancel={(event) => {
+            if (connectionGestureRef.current?.pointerId !== event.pointerId) return;
+            setGesture(null);
+            onCancelConnection();
+          }}
+          onConnectorPointerDown={(event) => beginConnectorDrag(event, node.id)}
+          onConnectorPointerMove={moveConnector}
+          onConnectorPointerUp={finishConnector}
           onMove={onMove}
           onClick={() => {
             setSelectedEdgeId(null);
@@ -1620,6 +1858,14 @@ function Building({
   replicas,
   selected,
   connecting,
+  connectionEligible,
+  connectionTarget,
+  connectorDisabled,
+  onConnectorClick,
+  onConnectorPointerCancel,
+  onConnectorPointerDown,
+  onConnectorPointerMove,
+  onConnectorPointerUp,
   onMove,
   onClick,
 }: {
@@ -1628,6 +1874,14 @@ function Building({
   replicas: number;
   selected: boolean;
   connecting: boolean;
+  connectionEligible: boolean;
+  connectionTarget: boolean;
+  connectorDisabled: boolean;
+  onConnectorClick: () => void;
+  onConnectorPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onConnectorPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onConnectorPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onConnectorPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onMove: (nodeId: string, position: { x: number; y: number }) => void;
   onClick: () => void;
 }) {
@@ -1646,77 +1900,100 @@ function Building({
   const suppressClick = useRef(false);
   const [dragging, setDragging] = useState(false);
   return (
-    <button
-      className={`park-building ${item.color} health-${health ?? "healthy"} ${selected ? "selected" : ""} ${connecting ? "connecting" : ""} ${dragging ? "dragging" : ""}`}
+    <div
+      className={`park-building ${item.color} health-${health ?? "healthy"} ${selected ? "selected" : ""} ${connecting ? "connecting" : ""} ${connectionEligible ? "connection-eligible" : ""} ${connectionTarget ? "connection-target" : ""} ${dragging ? "dragging" : ""}`}
+      data-node-id={node.id}
       style={{ left: node.x, top: node.y }}
-      type="button"
-      onClick={() => {
-        if (suppressClick.current) return;
-        onClick();
-      }}
-      onPointerDown={(event) => {
-        if (event.button !== 0 || !event.isPrimary) return;
-        const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
-        if (!bounds) return;
-        event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = {
-          pointerId: event.pointerId,
-          startClientX: event.clientX,
-          startClientY: event.clientY,
-          startNodeX: node.x,
-          startNodeY: node.y,
-          maxX: Math.max(0, bounds.width - 110),
-          maxY: Math.max(0, bounds.height - 118),
-          moved: false,
-        };
-      }}
-      onPointerMove={(event) => {
-        const current = drag.current;
-        if (!current || current.pointerId !== event.pointerId) return;
-        const deltaX = event.clientX - current.startClientX;
-        const deltaY = event.clientY - current.startClientY;
-        if (!current.moved && Math.hypot(deltaX, deltaY) < 4) return;
-        current.moved = true;
-        setDragging(true);
-        onMove(node.id, {
-          x: Math.max(0, Math.min(current.maxX, current.startNodeX + deltaX)),
-          y: Math.max(0, Math.min(current.maxY, current.startNodeY + deltaY)),
-        });
-      }}
-      onPointerUp={(event) => {
-        const current = drag.current;
-        if (!current || current.pointerId !== event.pointerId) return;
-        suppressClick.current = current.moved;
-        drag.current = null;
-        setDragging(false);
-        event.currentTarget.releasePointerCapture(event.pointerId);
-        window.setTimeout(() => {
-          suppressClick.current = false;
-        }, 0);
-      }}
-      onPointerCancel={() => {
-        drag.current = null;
-        setDragging(false);
-      }}
-      aria-label={`${node.label}, ${health ?? "healthy"}, ${replicas} replicas`}
     >
-      <span className="building-status">{health ?? "healthy"}</span>
-      <span className="building-roof">
-        <Icon />
-      </span>
-      <span className="building-body">
-        <i />
-        <i />
-        <i />
-      </span>
-      <span className="building-label">
-        <b>{node.label}</b>
-        <small>×{replicas}</small>
-      </span>
-      {(health === "heating" || health === "saturated" || health === "failed") && (
-        <span className="building-smoke">● ●</span>
-      )}
-    </button>
+      <button
+        className="building-select"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          if (suppressClick.current) return;
+          onClick();
+        }}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !event.isPrimary) return;
+          const bounds = event.currentTarget.closest(".park-map")?.getBoundingClientRect();
+          if (!bounds) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.current = {
+            pointerId: event.pointerId,
+            startClientX: event.clientX,
+            startClientY: event.clientY,
+            startNodeX: node.x,
+            startNodeY: node.y,
+            maxX: Math.max(0, bounds.width - 110),
+            maxY: Math.max(0, bounds.height - 118),
+            moved: false,
+          };
+        }}
+        onPointerMove={(event) => {
+          const current = drag.current;
+          if (!current || current.pointerId !== event.pointerId) return;
+          const deltaX = event.clientX - current.startClientX;
+          const deltaY = event.clientY - current.startClientY;
+          if (!current.moved && Math.hypot(deltaX, deltaY) < 4) return;
+          current.moved = true;
+          setDragging(true);
+          onMove(node.id, {
+            x: Math.max(0, Math.min(current.maxX, current.startNodeX + deltaX)),
+            y: Math.max(0, Math.min(current.maxY, current.startNodeY + deltaY)),
+          });
+        }}
+        onPointerUp={(event) => {
+          const current = drag.current;
+          if (!current || current.pointerId !== event.pointerId) return;
+          suppressClick.current = current.moved;
+          drag.current = null;
+          setDragging(false);
+          event.currentTarget.releasePointerCapture(event.pointerId);
+          window.setTimeout(() => {
+            suppressClick.current = false;
+          }, 0);
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+          setDragging(false);
+        }}
+        aria-label={`${node.label}, ${health ?? "healthy"}, ${replicas} replicas`}
+      >
+        <span className="building-status">{health ?? "healthy"}</span>
+        <span className="building-roof">
+          <Icon />
+        </span>
+        <span className="building-body">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="building-label">
+          <b>{node.label}</b>
+          <small>×{replicas}</small>
+        </span>
+        {(health === "heating" || health === "saturated" || health === "failed") && (
+          <span className="building-smoke">● ●</span>
+        )}
+      </button>
+      <button
+        className="connection-handle"
+        type="button"
+        aria-label={`Connect from ${node.label}`}
+        aria-pressed={connecting}
+        disabled={connectorDisabled}
+        onClick={(event) => {
+          event.stopPropagation();
+          onConnectorClick();
+        }}
+        onPointerCancel={onConnectorPointerCancel}
+        onPointerDown={onConnectorPointerDown}
+        onPointerMove={onConnectorPointerMove}
+        onPointerUp={onConnectorPointerUp}
+      >
+        <ArrowRight aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 
@@ -1724,9 +2001,7 @@ function BuildingInspector({
   node,
   snapshot,
   cash,
-  destinations,
   onClose,
-  onConnectTo,
   onReplica,
   onRemove,
   onConfigure,
@@ -1737,9 +2012,7 @@ function BuildingInspector({
   node: ArchitectureNode;
   snapshot?: Snapshot;
   cash: number;
-  destinations: ArchitectureNode[];
   onClose: () => void;
-  onConnectTo: (targetId: string) => void;
   onReplica: (replicaDelta: number) => void;
   onRemove: () => void;
   onConfigure: (changes: Partial<Omit<ComponentConfig, "replicas">>) => void;
@@ -1760,14 +2033,12 @@ function BuildingInspector({
     "configuration",
   );
   const [actionsOpen, setActionsOpen] = useState(false);
-  const [destinationsOpen, setDestinationsOpen] = useState(false);
   useEffect(() => {
     setDesiredReplicas(activeReplicas);
   }, [activeReplicas, node.id]);
   useEffect(() => {
     setOpenSection("configuration");
     setActionsOpen(false);
-    setDestinationsOpen(false);
   }, [node.id]);
   const replicaDelta = Math.max(0, desiredReplicas - activeReplicas);
   const replicaCost = replicaDelta * REPLICA_DEPLOYMENT_COST;
@@ -2072,49 +2343,24 @@ function BuildingInspector({
             </button>
           </div>
         )}
-        <DropdownMenu open={actionsOpen} onOpenChange={setActionsOpen}>
-          <DropdownMenuTrigger
-            render={<button className="inspector-actions-trigger" type="button" />}
-          >
-            <Ellipsis /> Actions
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" side="top" className="inspector-actions-menu">
-            <DropdownMenuSub open={destinationsOpen} onOpenChange={setDestinationsOpen}>
-              <DropdownMenuSubTrigger
+        {node.type !== "client" && (
+          <DropdownMenu open={actionsOpen} onOpenChange={setActionsOpen}>
+            <DropdownMenuTrigger
+              render={<button className="inspector-actions-trigger" type="button" />}
+            >
+              <Ellipsis /> Actions
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top" className="inspector-actions-menu">
+              <DropdownMenuItem
                 className="inspector-menu-item"
-                disabled={destinations.length === 0}
+                variant="destructive"
+                onClick={onRemove}
               >
-                <Cable /> Add traffic route
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="inspector-destination-menu">
-                {destinations.map((destination) => (
-                  <DropdownMenuItem
-                    className="inspector-destination-item"
-                    key={destination.id}
-                    onClick={() => onConnectTo(destination.id)}
-                  >
-                    <span>{destination.label}</span>
-                    <small>
-                      {buildingMeta[destination.type].name} · {destination.config.region}
-                    </small>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            {node.type !== "client" && (
-              <>
-                <DropdownMenuSeparator className="inspector-menu-separator" />
-                <DropdownMenuItem
-                  className="inspector-menu-item"
-                  variant="destructive"
-                  onClick={onRemove}
-                >
-                  <Trash2 /> Remove component
-                </DropdownMenuItem>
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+                <Trash2 /> Remove component
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </footer>
     </aside>
   );
@@ -2303,6 +2549,15 @@ function routePath(source: ArchitectureNode, target: ArchitectureNode) {
   const { x: endX, y: endY } = routeCenter(target);
   const middleX = startX + (endX - startX) / 2;
   return `M ${startX} ${startY} C ${middleX} ${startY}, ${middleX} ${endY}, ${endX} ${endY}`;
+}
+
+function routePreviewPath(start: { x: number; y: number }, end: { x: number; y: number }) {
+  const middleX = start.x + (end.x - start.x) / 2;
+  return `M ${start.x} ${start.y} C ${middleX} ${start.y}, ${middleX} ${end.y}, ${end.x} ${end.y}`;
+}
+
+function routeOutput(node: ArchitectureNode) {
+  return { x: node.x + 108, y: node.y + 57 };
 }
 
 function routeActionPosition(source: ArchitectureNode, target: ArchitectureNode) {

@@ -113,6 +113,6 @@ test("the standalone dropdown primitive supports building actions", async ({ pag
   await page.getByRole("button", { name: /^API server, .* replicas$/ }).click();
   await page.getByRole("button", { name: "Actions" }).click();
 
-  await expect(page.getByRole("menuitem", { name: "Add traffic route" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Remove component" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Add traffic route" })).toHaveCount(0);
 });
