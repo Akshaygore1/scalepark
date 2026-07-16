@@ -8,9 +8,6 @@
 !.yarn/releases
 !.yarn/versions
 
-# Testing
-/coverage
-
 # Build outputs
 /.next/
 /out/
