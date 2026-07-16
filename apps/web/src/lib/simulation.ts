@@ -6,6 +6,7 @@ import {
   type ComponentConfig,
   type Region,
 } from "./architecture";
+import type { ComponentType } from "./architecture";
 
 export type Scenario = {
   version: 1;
@@ -19,6 +20,19 @@ export type Scenario = {
   costCeiling: number;
   observeRecovery?: boolean;
   incidents?: ScenarioIncident[];
+  successRequirements?: ScenarioSuccessRequirements;
+};
+export type ScenarioSuccessRequirements = {
+  /** Components that must be reachable from clients and doing work to complete the lesson. */
+  activeComponents?: ComponentType[];
+  /** Minimum reachable capacity investments required by the mission. */
+  minimumReplicas?: Partial<Record<ComponentType, number>>;
+  /** Directed component routes that must exist in the live request path. */
+  requiredRoutes?: Array<{ source: ComponentType; target: ComponentType }>;
+  /** Global chapters need a deployment that actually spans regions. */
+  minimumRegions?: number;
+  /** A global route must split traffic instead of merely adding idle regional nodes. */
+  requireWeightedRouting?: boolean;
 };
 export type ScenarioIncident = {
   atSecond: number;
@@ -724,7 +738,9 @@ export function runSimulation(
       routeAllocations,
       activeReplicas: { ...activeReplicas },
       nodeCapacity: Object.fromEntries(nodes.map((node) => [node.id, capacityFor(node)])),
-      pendingDeployments: pendingDeployments.map((deployment) => ({ ...deployment })),
+      pendingDeployments: pendingDeployments.map((deployment) => ({
+        ...deployment,
+      })),
       cacheHitRate,
       originLoad,
       hotKeyPressure,
@@ -768,16 +784,102 @@ export function runSimulation(
         );
     }
   }
+  const unmetRequirement = unmetSuccessRequirement(design, snapshots, scenario.successRequirements);
+  if (unmetRequirement) {
+    events.push({
+      second: Math.max(0, scenario.durationSeconds - 1),
+      type: "slo-breach",
+      message: `Objective breached: ${unmetRequirement}`,
+    });
+  }
   return result(
     validation,
     snapshots,
     events,
-    objectiveBreached ? "failed" : "passed",
+    objectiveBreached || unmetRequirement ? "failed" : "passed",
     firstSaturatedNodeId,
     seed,
     architecture,
     scenario,
   );
+}
+
+function unmetSuccessRequirement(
+  architecture: Architecture,
+  snapshots: Snapshot[],
+  requirements: ScenarioSuccessRequirements | undefined,
+) {
+  if (!requirements) return undefined;
+  const reachable = reachableNodeIds(architecture);
+  for (const type of requirements.activeComponents ?? []) {
+    const active = architecture.nodes.some(
+      (node) => node.type === type && reachable.has(node.id) && node.config.replicas > 0,
+    );
+    if (!active) return `the ${type.replaceAll("-", " ")} system was not active.`;
+  }
+  for (const [type, minimum] of Object.entries(requirements.minimumReplicas ?? {})) {
+    const replicas = architecture.nodes
+      .filter((node) => node.type === type && reachable.has(node.id))
+      .reduce((total, node) => total + node.config.replicas, 0);
+    if (minimum !== undefined && replicas < minimum) {
+      return `the ${type.replaceAll("-", " ")} tier needed ${minimum} active replicas.`;
+    }
+  }
+  for (const route of requirements.requiredRoutes ?? []) {
+    const connected = architecture.edges.some((edge) => {
+      const source = architecture.nodes.find((node) => node.id === edge.source);
+      const target = architecture.nodes.find((node) => node.id === edge.target);
+      return (
+        source?.type === route.source &&
+        target?.type === route.target &&
+        reachable.has(source.id) &&
+        reachable.has(target.id)
+      );
+    });
+    if (!connected) {
+      return `traffic did not follow the ${route.source.replaceAll("-", " ")} to ${route.target.replaceAll("-", " ")} route.`;
+    }
+  }
+  if (
+    requirements.activeComponents?.includes("cache") &&
+    !snapshots.some((snapshot) => snapshot.cacheHitRate > 0)
+  ) {
+    return "the cache did not serve traffic.";
+  }
+  const nodesById = new Map(architecture.nodes.map((node) => [node.id, node]));
+  const regions = new Set(
+    snapshots.flatMap((snapshot) =>
+      snapshot.routeAllocations
+        .filter((allocation) => allocation.offered > 0)
+        .map((allocation) => nodesById.get(allocation.targetNodeId)?.config.region)
+        .filter((region): region is Region => Boolean(region)),
+    ),
+  );
+  if (requirements.minimumRegions && regions.size < requirements.minimumRegions) {
+    return `traffic did not reach ${requirements.minimumRegions} regions.`;
+  }
+  if (
+    requirements.requireWeightedRouting &&
+    !snapshots.some((snapshot) => {
+      const allocationsBySource = new Map<string, typeof snapshot.routeAllocations>();
+      for (const allocation of snapshot.routeAllocations) {
+        if (allocation.offered <= 0) continue;
+        const allocations = allocationsBySource.get(allocation.sourceNodeId) ?? [];
+        allocations.push(allocation);
+        allocationsBySource.set(allocation.sourceNodeId, allocations);
+      }
+      return [...allocationsBySource.values()].some((allocations) => {
+        if (allocations.length < 2) return false;
+        const targetRegions = new Set(
+          allocations.map((allocation) => nodesById.get(allocation.targetNodeId)?.config.region),
+        );
+        return targetRegions.size >= 2;
+      });
+    })
+  ) {
+    return "traffic was not split across weighted routes.";
+  }
+  return undefined;
 }
 
 export type SimulationSession = {
@@ -793,6 +895,7 @@ export type SimulationStep = {
   session: SimulationSession;
   snapshot?: Snapshot;
   events: SimulationEvent[];
+  appliedCommands: Array<Exclude<SimulationCommand, EngineSimulationCommand>>;
   complete: boolean;
 };
 
@@ -838,11 +941,19 @@ export function stepSimulation(
       ? preserveSimulationHistory(current.result, recomputed, current.second)
       : recomputed;
   const second = Math.min(nextSecond, Math.max(0, result.snapshots.length - 1));
-  const session = { ...current, architecture, scenario, commands: nextCommands, result, second };
+  const session = {
+    ...current,
+    architecture,
+    scenario,
+    commands: nextCommands,
+    result,
+    second,
+  };
   return {
     session,
     snapshot: result.snapshots[second],
     events: result.events.filter((event) => event.second === second),
+    appliedCommands: activatingCommands,
     complete: second >= result.snapshots.length - 1,
   };
 }
@@ -900,7 +1011,10 @@ function applySessionCommand(
   } else if (command.type === "incident") {
     scenario.incidents = [
       ...(scenario.incidents ?? []),
-      { ...command.incident, atSecond: command.atSecond + command.deploymentDelaySeconds },
+      {
+        ...command.incident,
+        atSecond: command.atSecond + command.deploymentDelaySeconds,
+      },
     ];
   }
 }

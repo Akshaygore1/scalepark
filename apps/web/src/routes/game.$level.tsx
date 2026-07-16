@@ -1,22 +1,20 @@
 import { TycoonGame } from "@/components/tycoon-game";
 import { gameLevelById } from "@/lib/game";
+import { useEffect } from "react";
+import { Navigate, useParams } from "react-router";
 
-import type { Route } from "./+types/game.$level";
-
-export function loader({ params }: Route.LoaderArgs) {
-  const level = gameLevelById(params.level);
+export default function GameLevel() {
+  const { level: levelId } = useParams();
+  const level = levelId ? gameLevelById(levelId) : undefined;
   if (!level) {
-    throw new Response("Not Found", { status: 404 });
+    return <Navigate replace to="/" />;
   }
-  return { levelId: level.id, levelName: level.name };
+  return <GameLevelContent levelId={level.id} levelName={level.name} />;
 }
 
-export function meta({ loaderData }: Route.MetaArgs) {
-  return [
-    { title: loaderData ? `${loaderData.levelName} — ScaleLab Park` : "ScaleLab Park" },
-  ];
-}
-
-export default function GameLevel({ loaderData }: Route.ComponentProps) {
-  return <TycoonGame levelId={loaderData.levelId} />;
+function GameLevelContent({ levelId, levelName }: { levelId: string; levelName: string }) {
+  useEffect(() => {
+    document.title = `${levelName} — ScaleLab Park`;
+  }, [levelName]);
+  return <TycoonGame levelId={levelId} />;
 }

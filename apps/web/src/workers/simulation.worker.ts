@@ -59,6 +59,9 @@ self.onmessage = (event: MessageEvent<SimulationWorkerCommand>) => {
     session = step.session;
     if (step.snapshot) self.postMessage({ type: "snapshot", snapshot: step.snapshot });
     if (step.events.length) self.postMessage({ type: "events", events: step.events });
+    if (step.appliedCommands.length) {
+      self.postMessage({ type: "topology-complete", commands: step.appliedCommands });
+    }
     for (const simulationEvent of step.events.filter(
       (item) => item.type === "deployment-applied" || item.type === "capacity-removed",
     )) {

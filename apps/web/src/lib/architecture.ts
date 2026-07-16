@@ -125,22 +125,32 @@ export function starterArchitecture(): Architecture {
   const cdn = createNode("cdn", 1);
   const api = createNode("api-server", 2);
   const database = createNode("primary-database", 3);
-  clients.x = 60;
-  clients.y = 270;
-  cdn.x = 250;
-  cdn.y = 105;
-  api.x = 450;
-  api.y = 280;
-  database.x = 665;
-  database.y = 120;
+  clients.x = 285;
+  clients.y = 326;
+  cdn.x = 425;
+  cdn.y = 226;
+  api.x = 565;
+  api.y = 326;
+  database.x = 705;
+  database.y = 226;
   return {
     version: ARCHITECTURE_VERSION,
     name: "Underpowered starter",
     nodes: [clients, cdn, api, database],
     edges: [
-      { id: crypto.randomUUID(), source: clients.id, target: cdn.id, weight: 100 },
+      {
+        id: crypto.randomUUID(),
+        source: clients.id,
+        target: cdn.id,
+        weight: 100,
+      },
       { id: crypto.randomUUID(), source: cdn.id, target: api.id, weight: 100 },
-      { id: crypto.randomUUID(), source: api.id, target: database.id, weight: 100 },
+      {
+        id: crypto.randomUUID(),
+        source: api.id,
+        target: database.id,
+        weight: 100,
+      },
     ],
   };
 }

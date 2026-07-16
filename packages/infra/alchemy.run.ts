@@ -1,5 +1,5 @@
 import alchemy from "alchemy";
-import { ReactRouter } from "alchemy/cloudflare";
+import { Website } from "alchemy/cloudflare";
 import { Worker } from "alchemy/cloudflare";
 import { D1Database } from "alchemy/cloudflare";
 import { config } from "dotenv";
@@ -30,11 +30,16 @@ export const server = await Worker("server", {
   },
 });
 
-export const web = await ReactRouter("web", {
+export const web = await Website("web", {
   cwd: "../../apps/web",
-  bindings: {
-    VITE_SERVER_URL: server.url!,
+  build: {
+    command: "bun run build",
+    env: {
+      VITE_SERVER_URL: server.url!,
+    },
   },
+  assets: "dist",
+  spa: true,
 });
 
 console.log(`Web    -> ${web.url}`);

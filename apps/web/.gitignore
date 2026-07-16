@@ -50,6 +50,8 @@ next-env.d.ts
 
 # Other
 dev-dist
+/playwright-report/
+/test-results/
 
 .wrangler
 .dev.vars*
