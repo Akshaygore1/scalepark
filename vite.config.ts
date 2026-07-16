@@ -1,40 +1,13 @@
-import { defineConfig } from "vite-plus";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { defineConfig } from "vite";
+import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
-  lint: {
-    ignorePatterns: [
-      "node_modules/**",
-      "**/node_modules/**",
-      "apps/web/build/**",
-      "apps/web/.react-router/**",
-      "apps/server/dist/**",
-      "packages/db/dist/**",
-      ".alchemy/**",
-      ".wrangler/**",
-      "**/.wrangler/**",
-    ],
-    options: {
-      typeAware: false,
-      typeCheck: false,
+  plugins: [tailwindcss(), react()],
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
-  },
-  fmt: {
-    ignorePatterns: [
-      "node_modules/**",
-      "**/node_modules/**",
-      "apps/web/build/**",
-      "apps/web/.react-router/**",
-      "apps/server/dist/**",
-      "packages/db/dist/**",
-      ".alchemy/**",
-      ".wrangler/**",
-      "**/.wrangler/**",
-    ],
-    singleQuote: false,
-    semi: true,
-    sortPackageJson: true,
-  },
-  staged: {
-    "*.{js,ts,jsx,tsx,vue,svelte,json,jsonc,css,md}": "vp check --fix",
   },
 });
