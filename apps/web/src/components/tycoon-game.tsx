@@ -28,6 +28,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 
 import {
   createNode,
@@ -48,7 +49,9 @@ import {
   createTycoonState,
   demandForReputation,
   emptyGameProgress,
+  gameLevelById,
   initialArchitecture,
+  isGameLevelUnlocked,
   restoreGameProgress,
   sandboxChapter,
   saveGameProgress,
@@ -105,9 +108,10 @@ const buildingMeta: Record<
   worker: { name: "Worker garage", short: "Worker", icon: TimerReset, color: "green" },
 };
 
-export function TycoonGame() {
-  const [screen, setScreen] = useState<"menu" | "game">("menu");
+export function TycoonGame({ levelId }: { levelId?: string }) {
+  const navigate = useNavigate();
   const [progress, setProgress] = useState<GameProgress>(emptyGameProgress);
+  const [activeLevelId, setActiveLevelId] = useState<string | null>(null);
   const [game, setGame] = useState<TycoonState>(() => createTycoonState("campaign"));
   const [architecture, setArchitecture] = useState<Architecture>(() => starterArchitecture());
   const [selectedId, setSelectedId] = useState<string>("");
@@ -339,8 +343,18 @@ export function TycoonGame() {
     setConnectionSource(null);
     setAdvisor(null);
     setNotice(`${chapter.name} loaded. Press play when you are ready for traffic.`);
-    setScreen("game");
+    setActiveLevelId(chapter.id);
   }
+
+  useEffect(() => {
+    if (!hydrated || !levelId || activeLevelId === levelId) return;
+    const chapter = gameLevelById(levelId);
+    if (!chapter || !isGameLevelUnlocked(levelId, progress)) {
+      navigate("/", { replace: true });
+      return;
+    }
+    startGame(levelId === sandboxChapter.id ? "sandbox" : "campaign", chapter);
+  }, [activeLevelId, hydrated, levelId, navigate, progress]);
 
   function togglePlay() {
     worker.current?.postMessage({ type: game.phase === "running" ? "pause" : "resume" });
@@ -566,15 +580,23 @@ export function TycoonGame() {
     }
   }
 
-  if (screen === "menu") {
+  if (!levelId) {
     return (
       <GameMenu
         ready={hydrated}
         attemptHistory={attemptHistory}
         progress={progress}
-        onCampaign={(chapter) => startGame("campaign", chapter)}
-        onSandbox={() => startGame("sandbox", sandboxChapter)}
+        onCampaign={(chapter) => navigate(`/game/${chapter.id}`)}
+        onSandbox={() => navigate(`/game/${sandboxChapter.id}`)}
       />
+    );
+  }
+
+  if (!hydrated || activeLevelId !== levelId) {
+    return (
+      <main className="game-menu" aria-busy="true">
+        <p>Loading park…</p>
+      </main>
     );
   }
 
@@ -583,7 +605,7 @@ export function TycoonGame() {
       <GameHud
         game={game}
         snapshot={snapshot}
-        onExit={() => setScreen("menu")}
+        onExit={() => navigate("/")}
         onJournal={() => setJournalOpen(true)}
         onExport={downloadArchitecture}
         onImport={() => importInput.current?.click()}
@@ -690,7 +712,7 @@ export function TycoonGame() {
           game={game}
           snapshot={snapshot}
           score={score}
-          onMenu={() => setScreen("menu")}
+          onMenu={() => navigate("/")}
           onRetry={retryCheckpoint}
         />
       )}
@@ -758,9 +780,8 @@ function GameMenu({
           <span>Campaign map</span>
           <small>{progress.completedChapterIds.length} / 5 complete</small>
         </div>
-        {campaignChapters.map((chapter, index) => {
-          const unlocked =
-            index === 0 || progress.completedChapterIds.includes(campaignChapters[index - 1]!.id);
+        {campaignChapters.map((chapter) => {
+          const unlocked = isGameLevelUnlocked(chapter.id, progress);
           const complete = progress.completedChapterIds.includes(chapter.id);
           return (
             <button

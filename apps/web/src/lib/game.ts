@@ -256,6 +256,21 @@ export function chapterById(id: string): CampaignChapter {
     : (campaignChapters.find((item) => item.id === id) ?? campaignChapters[0]!);
 }
 
+export function gameLevelById(id: string): CampaignChapter | undefined {
+  return id === sandboxChapter.id
+    ? sandboxChapter
+    : campaignChapters.find((chapter) => chapter.id === id);
+}
+
+export function isGameLevelUnlocked(id: string, progress: GameProgress): boolean {
+  if (id === sandboxChapter.id) return true;
+  const chapterIndex = campaignChapters.findIndex((chapter) => chapter.id === id);
+  if (chapterIndex < 0) return false;
+  return (
+    chapterIndex === 0 || progress.completedChapterIds.includes(campaignChapters[chapterIndex - 1]!.id)
+  );
+}
+
 export function createTycoonState(mode: GameMode, chapterId?: string): TycoonState {
   const current = mode === "sandbox" ? sandboxChapter : chapterById(chapterId ?? "opening-day");
   return {

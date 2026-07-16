@@ -46,10 +46,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   const location = useLocation();
+  const isGameSurface = location.pathname === "/" || location.pathname.startsWith("/game/");
   return (
     <QueryClientProvider client={queryClient}>
       <div className="app-shell">
-        {location.pathname !== "/" && <Header />}
+        {!isGameSurface && <Header />}
         <Outlet />
       </div>
       <Toaster richColors />

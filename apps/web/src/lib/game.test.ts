@@ -7,7 +7,9 @@ import {
   campaignChapters,
   createTycoonState,
   demandForReputation,
+  emptyGameProgress,
   gameProgressStorageKey,
+  isGameLevelUnlocked,
   restoreGameProgress,
   saveGameProgress,
 } from "./game";
@@ -18,6 +20,22 @@ test("campaign chapters progressively unlock the complete component catalog", ()
   assert.deepEqual(campaignChapters[0]?.unlocked, ["client", "api-server", "primary-database"]);
   assert.ok(campaignChapters[4]?.unlocked.includes("read-replica"));
   assert.equal(campaignChapters[4]?.scenario.spikeRps, 18_000);
+});
+
+test("game levels share one progression-aware unlock contract", () => {
+  const progress = emptyGameProgress();
+  assert.equal(isGameLevelUnlocked("opening-day", progress), true);
+  assert.equal(isGameLevelUnlocked("sandbox", progress), true);
+  assert.equal(isGameLevelUnlocked("first-spike", progress), false);
+  assert.equal(isGameLevelUnlocked("missing-level", progress), false);
+
+  assert.equal(
+    isGameLevelUnlocked("first-spike", {
+      ...progress,
+      completedChapterIds: ["opening-day"],
+    }),
+    true,
+  );
 });
 
 test("economy and reputation advance deterministically from snapshots", () => {
