@@ -1,8 +1,9 @@
-export const ARCHITECTURE_VERSION = 1 as const;
+export const ARCHITECTURE_VERSION = 2 as const;
 export const architectureStorageKey = "scalelab:architecture";
 
 export const componentTypes = [
   "client",
+  "dns",
   "cdn",
   "load-balancer",
   "api-server",
@@ -15,6 +16,14 @@ export const componentTypes = [
 
 export type ComponentType = (typeof componentTypes)[number];
 export type Region = "us-east" | "us-west" | "eu-west" | "ap-south";
+export type TrafficPurpose =
+  | "default-request"
+  | "static-content"
+  | "read"
+  | "write"
+  | "async-job"
+  | "cache-miss"
+  | "replication";
 
 export type ComponentConfig = {
   replicas: number;
@@ -52,6 +61,7 @@ export type ArchitectureEdge = {
   source: string;
   target: string;
   weight: number;
+  purpose: TrafficPurpose;
 };
 
 export type Architecture = {
@@ -89,7 +99,8 @@ const defaultConfig: ComponentConfig = {
 
 const labels: Record<ComponentType, string> = {
   client: "Clients",
-  cdn: "DNS / CDN",
+  dns: "DNS",
+  cdn: "CDN",
   "load-balancer": "Load balancer",
   "api-server": "API server",
   cache: "Cache",
@@ -102,11 +113,96 @@ const labels: Record<ComponentType, string> = {
 export function nodeConfig(type: ComponentType): ComponentConfig {
   const config = structuredClone(defaultConfig);
   if (type === "client") config.capacity = 18_000;
-  if (type === "cdn") config.capacity = 14_000;
+  if (type === "dns" || type === "load-balancer") {
+    config.capacity = 30_000;
+    config.concurrency = 1_200;
+  }
+  if (type === "cdn") {
+    config.capacity = 25_000;
+    config.concurrency = 1_200;
+  }
+  if (type === "api-server") {
+    config.capacity = 5_000;
+    config.concurrency = 200;
+    config.retries = 0;
+  }
   if (type === "cache") config.capacity = 12_000;
-  if (type === "queue") config.capacity = 3_000;
-  if (type === "worker") config.capacity = 1_200;
+  if (type === "queue") {
+    config.capacity = 3_000;
+    config.queueCapacity = 100_000;
+  }
+  if (type === "worker") {
+    config.capacity = 8_000;
+    config.concurrency = 320;
+  }
   return config;
+}
+
+export const replicaControlledTypes = ["api-server", "worker"] as const satisfies readonly ComponentType[];
+
+export function controlsReplicas(type: ComponentType) {
+  return (replicaControlledTypes as readonly ComponentType[]).includes(type);
+}
+
+export const componentRoles: Record<ComponentType, string> = {
+  client: "Generates requests for the system.",
+  dns: "Selects a regional endpoint before a request begins.",
+  cdn: "Serves cacheable content at the edge.",
+  "load-balancer": "Managed traffic distribution across API capacity.",
+  "api-server": "Runs application logic and handles dynamic requests.",
+  cache: "Keeps repeated reads away from primary storage.",
+  "primary-database": "Stores the system's writable source of truth.",
+  "read-replica": "Serves database reads without accepting writes.",
+  queue: "Buffers asynchronous work during downstream pressure.",
+  worker: "Consumes queued jobs outside the request path.",
+};
+
+const allowedTargets: Record<ComponentType, readonly ComponentType[]> = {
+  client: ["dns", "cdn", "load-balancer", "api-server"],
+  dns: ["load-balancer"],
+  cdn: ["load-balancer"],
+  "load-balancer": ["api-server"],
+  "api-server": ["cache", "queue", "primary-database", "read-replica"],
+  cache: ["primary-database"],
+  "primary-database": ["read-replica"],
+  "read-replica": [],
+  queue: ["worker"],
+  worker: ["primary-database"],
+};
+
+export function canConnectComponents(source: ComponentType, target: ComponentType) {
+  return allowedTargets[source].includes(target);
+}
+
+export function trafficPurposeForConnection(source: ComponentType, target: ComponentType) {
+  if (source === "client" && target === "cdn") return "static-content" as const;
+  if (source === "api-server" && (target === "cache" || target === "read-replica")) return "read" as const;
+  if (source === "api-server" && target === "queue") return "async-job" as const;
+  if (source === "cache" && target === "primary-database") return "cache-miss" as const;
+  if (source === "queue") return "async-job" as const;
+  if (source === "worker" && target === "primary-database") return "write" as const;
+  if (source === "api-server" && target === "primary-database") return "write" as const;
+  if (source === "primary-database" && target === "read-replica") return "replication" as const;
+  return "default-request" as const;
+}
+
+export function trafficPurposeLabel(purpose: TrafficPurpose) {
+  return purpose.replaceAll("-", " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+export function databaseCapacityLevel(node: ArchitectureNode) {
+  if (node.type !== "primary-database") return 0;
+  if (node.config.capacity >= 30_000) return 3;
+  if (node.config.capacity >= 20_000) return 2;
+  return 1;
+}
+
+export function databaseUpgrade(node: ArchitectureNode): Partial<ComponentConfig> | undefined {
+  const level = databaseCapacityLevel(node);
+  if (level >= 3) return undefined;
+  return level === 1
+    ? { capacity: 20_000, concurrency: 2_000, connectionLimit: 2_000 }
+    : { capacity: 30_000, concurrency: 1_200, connectionLimit: 1_200 };
 }
 
 export function createNode(type: ComponentType, index: number): ArchitectureNode {
@@ -122,34 +218,32 @@ export function createNode(type: ComponentType, index: number): ArchitectureNode
 
 export function starterArchitecture(): Architecture {
   const clients = createNode("client", 0);
-  const cdn = createNode("cdn", 1);
-  const api = createNode("api-server", 2);
-  const database = createNode("primary-database", 3);
+  const api = createNode("api-server", 1);
+  const database = createNode("primary-database", 2);
   clients.x = 285;
   clients.y = 326;
-  cdn.x = 425;
-  cdn.y = 226;
-  api.x = 565;
+  api.x = 495;
   api.y = 326;
   database.x = 705;
   database.y = 226;
   return {
     version: ARCHITECTURE_VERSION,
     name: "Underpowered starter",
-    nodes: [clients, cdn, api, database],
+    nodes: [clients, api, database],
     edges: [
       {
         id: crypto.randomUUID(),
         source: clients.id,
-        target: cdn.id,
+        target: api.id,
         weight: 100,
+        purpose: trafficPurposeForConnection(clients.type, api.type),
       },
-      { id: crypto.randomUUID(), source: cdn.id, target: api.id, weight: 100 },
       {
         id: crypto.randomUUID(),
         source: api.id,
         target: database.id,
         weight: 100,
+        purpose: trafficPurposeForConnection(api.type, database.type),
       },
     ],
   };
@@ -168,6 +262,11 @@ export function validateArchitecture(architecture: Architecture): ValidationResu
     }
     if (edge.source === edge.target) errors.push("A component cannot route traffic to itself.");
     if (edge.weight <= 0) errors.push("Routing weights must be greater than zero.");
+    const source = architecture.nodes.find((node) => node.id === edge.source);
+    const target = architecture.nodes.find((node) => node.id === edge.target);
+    if (source && target && !canConnectComponents(source.type, target.type)) {
+      errors.push(`${source.label} cannot connect to ${target.label}.`);
+    }
   }
 
   for (const client of clients) {
@@ -265,7 +364,16 @@ function isArchitectureEdge(value: unknown): value is ArchitectureEdge {
     typeof edge.id === "string" &&
     typeof edge.source === "string" &&
     typeof edge.target === "string" &&
-    typeof edge.weight === "number"
+    typeof edge.weight === "number" &&
+    [
+      "default-request",
+      "static-content",
+      "read",
+      "write",
+      "async-job",
+      "cache-miss",
+      "replication",
+    ].includes(edge.purpose)
   );
 }
 

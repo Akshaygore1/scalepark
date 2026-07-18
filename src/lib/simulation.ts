@@ -1,4 +1,5 @@
 import {
+  databaseCapacityLevel,
   validateArchitecture,
   type Architecture,
   type ArchitectureEdge,
@@ -27,12 +28,22 @@ export type ScenarioSuccessRequirements = {
   activeComponents?: ComponentType[];
   /** Minimum reachable capacity investments required by the mission. */
   minimumReplicas?: Partial<Record<ComponentType, number>>;
+  /** Minimum number of separately placed nodes for regional lessons. */
+  minimumComponents?: Partial<Record<ComponentType, number>>;
+  /** The writable primary scales through capacity upgrades, not replicas. */
+  minimumDatabaseLevel?: number;
   /** Directed component routes that must exist in the live request path. */
   requiredRoutes?: Array<{ source: ComponentType; target: ComponentType }>;
+  /** Routes that bypass the lesson's intended component must be removed. */
+  forbiddenRoutes?: Array<{ source: ComponentType; target: ComponentType }>;
+  /** Backpressure lessons require retry amplification to be disabled. */
+  requireRetriesDisabled?: boolean;
   /** Global chapters need a deployment that actually spans regions. */
   minimumRegions?: number;
   /** A global route must split traffic instead of merely adding idle regional nodes. */
   requireWeightedRouting?: boolean;
+  /** Require complete DNS-to-load-balancer-to-API paths in distinct regions. */
+  minimumRegionalPaths?: number;
 };
 export type ScenarioIncident = {
   atSecond: number;
@@ -138,8 +149,10 @@ export type Snapshot = {
   routeAllocations: RouteAllocation[];
   activeReplicas: Record<string, number>;
   nodeCapacity: Record<string, number>;
+  nodeUtilization: Record<string, number>;
   pendingDeployments: PendingDeployment[];
   cacheHitRate: number;
+  cdnHitRate: number;
   originLoad: number;
   hotKeyPressure: number;
   cacheMisses: number;
@@ -227,10 +240,16 @@ export function runSimulation(
   const design = structuredClone(architecture);
   const reachable = reachableNodeIds(design);
   const nodes = design.nodes.filter((node) => node.type !== "client" && reachable.has(node.id));
+  const cdn = nodes.find((node) => node.type === "cdn");
   const cache = nodes.find((node) => node.type === "cache");
   const database = nodes.find((node) => node.type === "primary-database") ?? nodes[0]!;
   const queueNode = nodes.find((node) => node.type === "queue");
-  const queueTrafficShare = queueNode ? trafficShareReachingNode(design, queueNode.id) : 0;
+  const queueTrafficShare =
+    queueNode &&
+    design.edges.some((edge) => edge.target === queueNode.id && edge.purpose === "async-job")
+      ? 0.25
+      : 0;
+  const cdnTrafficShare = cdn ? trafficShareReachingNode(design, cdn.id) : 0;
   const queueDescendants = queueNode ? descendantNodeIds(design, queueNode.id) : new Set();
   const workerNodes = nodes.filter(
     (node) => node.type === "worker" && queueDescendants.has(node.id),
@@ -481,8 +500,11 @@ export function runSimulation(
       }
     }
     const routableOffered = Math.max(0, offered - networkDropped - removalDropped);
-    const freshMessages = Math.round(routableOffered * queueTrafficShare);
-    const freshRequests = routableOffered - freshMessages;
+    const cdnHitRate = cdn ? Math.min(0.7, 0.25 + cdn.config.ttlSeconds / 1_000) : 0;
+    const cdnHits = Math.floor(routableOffered * cdnTrafficShare * cdnHitRate);
+    const originOffered = Math.max(0, routableOffered - cdnHits);
+    const freshMessages = Math.round(originOffered * queueTrafficShare);
+    const freshRequests = originOffered - freshMessages;
     const messageDemand = freshMessages + previousMessageBacklog;
     const requestDemand = freshRequests + previousRequestBacklog;
     const workerReleasedMessages = Math.min(messageDemand, workerCapacity);
@@ -571,7 +593,7 @@ export function runSimulation(
               transportNodes[0] ?? database,
             );
     const inFlight = Math.min(Math.ceil(admitted * 0.1), admitted);
-    const successful = admitted - inFlight;
+    const successful = cdnHits + admitted - inFlight;
     const requestExcess = Math.max(0, requestDemand - admittedRequests);
     const messageExcess = Math.max(0, messageDemand - admittedMessages);
     const excess = requestExcess + messageExcess;
@@ -591,13 +613,17 @@ export function runSimulation(
     requestBacklog = Math.max(0, requestExcess - timedOut - droppedRequests);
     messageBacklog = Math.max(0, messageExcess - droppedMessages);
     const queue = requestBacklog + messageBacklog;
+    const acceptedFreshMessages =
+      queueNode && queueTrafficShare > 0
+        ? Math.min(freshMessages, Math.max(0, queueBudget - previousMessageBacklog))
+        : Math.min(freshMessages, Math.max(0, admittedMessages - previousMessageBacklog));
     const currentWorkAdmitted =
       Math.min(freshRequests, Math.max(0, admittedRequests - previousRequestBacklog)) +
-      Math.min(freshMessages, Math.max(0, admittedMessages - previousMessageBacklog));
-    const availability = offered === 0 ? 1 : currentWorkAdmitted / offered;
+      acceptedFreshMessages;
+    const availability = offered === 0 ? 1 : (cdnHits + currentWorkAdmitted) / offered;
     const p95LatencyMs = Math.round(
       42 +
-        (queue / Math.max(1, synchronousCapacity)) * 420 +
+        (requestBacklog / Math.max(1, synchronousCapacity)) * 420 +
         databaseServiceTimeMs +
         networkLatencyMs +
         activeRetryPolicies.reduce(
@@ -649,16 +675,23 @@ export function runSimulation(
         );
     const databaseQueue = Math.max(0, amplifiedLoad - databaseCapacity);
     const nodeDemand = Object.fromEntries(
-      nodes.map((node) => [
-        node.id,
-        node.type === "queue"
-          ? messageDemand
-          : node.type === "worker"
-            ? messageDemand * (workerTrafficShares.get(node.id) ?? 0)
-            : node.type === "cache" || node.type === "primary-database"
-              ? amplifiedLoad
-              : offered * trafficShareReachingNode(design, node.id),
-      ]),
+      nodes.map((node) => {
+        const grossTransportDemand = offered * trafficShareReachingNode(design, node.id);
+        const cdnAvoidedDemand =
+          cdn && node.id !== cdn.id
+            ? cdnHits * trafficShareBetweenNodes(design, cdn.id, node.id)
+            : 0;
+        return [
+          node.id,
+          node.type === "queue"
+            ? messageDemand
+            : node.type === "worker"
+              ? messageDemand * (workerTrafficShares.get(node.id) ?? 0)
+              : node.type === "cache" || node.type === "primary-database"
+                ? amplifiedLoad
+                : Math.max(0, grossTransportDemand - cdnAvoidedDemand),
+        ];
+      }),
     );
     for (const node of nodes.filter((candidate) => candidate.config.autoscaling.enabled)) {
       const policy = node.config.autoscaling;
@@ -731,17 +764,24 @@ export function runSimulation(
       inFlight,
       availability,
       p95LatencyMs,
-      throughput: admitted,
+      throughput: cdnHits + admitted,
       cost,
       networkLatencyMs,
       regionalCost,
       routeAllocations,
       activeReplicas: { ...activeReplicas },
       nodeCapacity: Object.fromEntries(nodes.map((node) => [node.id, capacityFor(node)])),
+      nodeUtilization: Object.fromEntries(
+        nodes.map((node) => [
+          node.id,
+          Math.min(999, Math.round(((nodeDemand[node.id] ?? 0) / Math.max(1, capacityFor(node))) * 100)),
+        ]),
+      ),
       pendingDeployments: pendingDeployments.map((deployment) => ({
         ...deployment,
       })),
       cacheHitRate,
+      cdnHitRate,
       originLoad,
       hotKeyPressure,
       cacheMisses,
@@ -761,7 +801,7 @@ export function runSimulation(
     if (
       availability < scenario.availabilityTarget ||
       p95LatencyMs > scenario.p95TargetMs ||
-      (offered >= scenario.throughputTarget && admitted < scenario.throughputTarget) ||
+      (offered >= scenario.throughputTarget && cdnHits + admitted < scenario.throughputTarget) ||
       cost > scenario.costCeiling
     ) {
       events.push({
@@ -825,6 +865,21 @@ function unmetSuccessRequirement(
       return `the ${type.replaceAll("-", " ")} tier needed ${minimum} active replicas.`;
     }
   }
+  for (const [type, minimum] of Object.entries(requirements.minimumComponents ?? {})) {
+    const count = architecture.nodes.filter(
+      (node) => node.type === type && reachable.has(node.id),
+    ).length;
+    if (minimum !== undefined && count < minimum) {
+      return `the ${type.replaceAll("-", " ")} tier needed ${minimum} separate components.`;
+    }
+  }
+  if (requirements.minimumDatabaseLevel) {
+    const database = architecture.nodes.find((node) => node.type === "primary-database");
+    const level = database ? databaseCapacityLevel(database) : 0;
+    if (level < requirements.minimumDatabaseLevel) {
+      return "the primary database needed a capacity upgrade.";
+    }
+  }
   for (const route of requirements.requiredRoutes ?? []) {
     const connected = architecture.edges.some((edge) => {
       const source = architecture.nodes.find((node) => node.id === edge.source);
@@ -839,6 +894,22 @@ function unmetSuccessRequirement(
     if (!connected) {
       return `traffic did not follow the ${route.source.replaceAll("-", " ")} to ${route.target.replaceAll("-", " ")} route.`;
     }
+  }
+  for (const route of requirements.forbiddenRoutes ?? []) {
+    const bypass = architecture.edges.some((edge) => {
+      const source = architecture.nodes.find((node) => node.id === edge.source);
+      const target = architecture.nodes.find((node) => node.id === edge.target);
+      return source?.type === route.source && target?.type === route.target;
+    });
+    if (bypass) {
+      return `the ${route.source.replaceAll("-", " ")} to ${route.target.replaceAll("-", " ")} bypass was still active.`;
+    }
+  }
+  if (
+    requirements.requireRetriesDisabled &&
+    architecture.nodes.some((node) => node.type === "api-server" && node.config.retries > 0)
+  ) {
+    return "API retries were still amplifying downstream pressure.";
   }
   if (
     requirements.activeComponents?.includes("cache") &&
@@ -857,6 +928,27 @@ function unmetSuccessRequirement(
   );
   if (requirements.minimumRegions && regions.size < requirements.minimumRegions) {
     return `traffic did not reach ${requirements.minimumRegions} regions.`;
+  }
+  if (requirements.minimumRegionalPaths) {
+    const regionalPaths = new Set<string>();
+    for (const dnsNode of architecture.nodes.filter((node) => node.type === "dns")) {
+      for (const dnsEdge of architecture.edges.filter((edge) => edge.source === dnsNode.id)) {
+        const loadBalancer = nodesById.get(dnsEdge.target);
+        if (loadBalancer?.type !== "load-balancer") continue;
+        const hasRegionalApi = architecture.edges.some((edge) => {
+          const api = nodesById.get(edge.target);
+          return (
+            edge.source === loadBalancer.id &&
+            api?.type === "api-server" &&
+            api.config.region === loadBalancer.config.region
+          );
+        });
+        if (hasRegionalApi) regionalPaths.add(loadBalancer.config.region);
+      }
+    }
+    if (regionalPaths.size < requirements.minimumRegionalPaths) {
+      return `DNS needed ${requirements.minimumRegionalPaths} complete regional load balancer and API paths.`;
+    }
   }
   if (
     requirements.requireWeightedRouting &&
@@ -1168,10 +1260,22 @@ function calculateCacheHitRate(cache: Architecture["nodes"][number], hotKeyPress
 }
 
 function componentCost(node: Architecture["nodes"][number], replicas = node.config.replicas) {
-  const capacityCost = node.config.capacity * 0.00015;
-  const concurrencyCost = node.config.concurrency * 0.001;
-  const servicePerformanceCost = (1000 / node.config.serviceTimeMs) * 0.01;
-  return replicas * (capacityCost + concurrencyCost + servicePerformanceCost);
+  if (node.type === "api-server") return replicas * 1.2;
+  if (node.type === "worker") return replicas * 0.9;
+  if (node.type === "primary-database") return [0, 2.5, 4.5, 7][databaseCapacityLevel(node)]!;
+  const managedCost: Record<ComponentType, number> = {
+    client: 0,
+    dns: 0.8,
+    cdn: 2.4,
+    "load-balancer": 1.4,
+    "api-server": 0,
+    cache: 2,
+    "primary-database": 0,
+    "read-replica": 1.8,
+    queue: 1.2,
+    worker: 0,
+  };
+  return managedCost[node.type];
 }
 
 function calculateRouteAllocations(

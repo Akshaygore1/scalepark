@@ -1,6 +1,9 @@
 import {
   architectureStorageKey,
   componentTypes,
+  databaseCapacityLevel,
+  databaseUpgrade,
+  trafficPurposeForConnection,
   isArchitecture,
   starterArchitecture,
   type Architecture,
@@ -8,7 +11,7 @@ import {
 } from "./architecture";
 import { runSimulation, type Scenario, type Snapshot } from "./simulation";
 
-export const GAME_PROGRESS_VERSION = 1 as const;
+export const GAME_PROGRESS_VERSION = 2 as const;
 export const gameProgressStorageKey = "scalelab:tycoon-progress";
 export const CAMPAIGN_SIMULATION_SEED = 730_241;
 
@@ -21,7 +24,6 @@ export type AdvisorLesson = {
   title: string;
   message: string;
   detail: string;
-  promptAtSecond?: number;
 };
 
 export type ChapterGuidanceRequirement =
@@ -30,15 +32,21 @@ export type ChapterGuidanceRequirement =
       type: ComponentType;
       minimumReplicas: number;
       label: string;
+      hint: string;
     }
+  | { kind: "component-count"; type: ComponentType; minimum: number; label: string; hint: string }
   | {
       kind: "route";
       source: ComponentType;
       target: ComponentType;
       label: string;
+      hint: string;
     }
-  | { kind: "regions"; minimum: number; label: string }
-  | { kind: "weighted-routing"; label: string };
+  | { kind: "no-route"; source: ComponentType; target: ComponentType; label: string; hint: string }
+  | { kind: "database-upgrade"; minimumLevel: number; label: string; hint: string }
+  | { kind: "retries-disabled"; label: string; hint: string }
+  | { kind: "regions"; minimum: number; label: string; hint: string }
+  | { kind: "weighted-routing"; label: string; hint: string };
 
 export type ChapterGuidanceStatus = ChapterGuidanceRequirement & {
   complete: boolean;
@@ -65,6 +73,7 @@ export type CampaignChapter = {
   unlocked: ComponentType[];
   startingProfile: StartingArchitectureProfile;
   scenario: Scenario;
+  refresher: AdvisorLesson[];
   lessons: AdvisorLesson[];
   guidance: ChapterGuidanceRequirement[];
 };
@@ -103,7 +112,6 @@ export type TycoonState = {
   revenue: number;
   operatingCost: number;
   eventLog: string[];
-  encounteredConcepts: string[];
 };
 
 const baseTargets = {
@@ -134,11 +142,31 @@ export const campaignChapters: CampaignChapter[] = [
     spikeAtSecond: 18,
     throughputTarget: 3_200,
     successRequirements: {
-      minimumReplicas: { "api-server": 2, "primary-database": 2 },
+      minimumReplicas: { "api-server": 2 },
+      minimumDatabaseLevel: 2,
     },
     guidance: [
-      componentGuide("api-server", 2, "Run two API replicas"),
-      componentGuide("primary-database", 2, "Run two database replicas"),
+      componentGuide(
+        "api-server",
+        2,
+        "Extra API capacity helps absorb sudden traffic.",
+        "Run two API replicas",
+      ),
+      databaseUpgradeGuide(2, "A larger database keeps storage from becoming the next queue.", "Upgrade database capacity once"),
+    ],
+    refresher: [
+      refresher(
+        "api-server",
+        "Start with the request path",
+        "Clients send requests to API servers. Each server has a finite amount of work it can complete every second.",
+        "When traffic exceeds that capacity, requests wait. Add API replicas to increase the work your park can handle in parallel.",
+      ),
+      refresher(
+        "primary-database",
+        "Protect the data tier",
+        "API requests eventually need durable data. Your database is another capacity limit in the path.",
+        "Upgrade the primary database's capacity. A writable primary scales differently from stateless API servers.",
+      ),
     ],
     lessons: [
       lesson(
@@ -146,7 +174,6 @@ export const campaignChapters: CampaignChapter[] = [
         "A line is forming",
         "Requests arrived faster than one building could finish them.",
         "Capacity is work per second. Once demand exceeds it, requests wait in a queue and latency rises.",
-        12,
       ),
     ],
   }),
@@ -169,18 +196,53 @@ export const campaignChapters: CampaignChapter[] = [
     throughputTarget: 7_300,
     successRequirements: {
       activeComponents: ["load-balancer"],
-      minimumReplicas: { "api-server": 4, "primary-database": 4 },
+      minimumReplicas: { "api-server": 4 },
       requiredRoutes: [
         { source: "client", target: "load-balancer" },
         { source: "load-balancer", target: "api-server" },
       ],
+      forbiddenRoutes: [{ source: "client", target: "api-server" }],
     },
     guidance: [
-      componentGuide("load-balancer", 1, "Build a load balancer"),
-      componentGuide("api-server", 4, "Scale the API tier to four replicas"),
-      componentGuide("primary-database", 4, "Scale the database to four replicas"),
-      routeGuide("client", "load-balancer", "Route clients through the load balancer"),
-      routeGuide("load-balancer", "api-server", "Send balanced traffic to the API tier"),
+      componentGuide(
+        "load-balancer",
+        1,
+        "A traffic distributor keeps one service from carrying the full load.",
+        "Build a load balancer",
+      ),
+      componentGuide(
+        "api-server",
+        4,
+        "More API capacity can process more requests in parallel.",
+        "Scale the API tier to four replicas",
+      ),
+      routeGuide(
+        "client",
+        "load-balancer",
+        "Incoming requests need a path through the distribution layer.",
+        "Route clients through the load balancer",
+      ),
+      routeGuide(
+        "load-balancer",
+        "api-server",
+        "Distributed traffic still needs a path to application capacity.",
+        "Send balanced traffic to the API tier",
+      ),
+      noRouteGuide("client", "api-server", "All dynamic traffic now uses the load balancer.", "Remove the direct client-to-API route"),
+    ],
+    refresher: [
+      refresher(
+        "load-balancer",
+        "Give traffic a dispatcher",
+        "A load balancer receives client traffic and distributes it across API servers instead of sending everything to one machine.",
+        "Build it in the request path: clients to load balancer, then load balancer to the API tier.",
+      ),
+      refresher(
+        "api-server",
+        "Scale out, not up",
+        "Horizontal scaling means adding multiple API replicas that can handle requests in parallel.",
+        "The balancer makes those replicas useful by sharing the spike between them.",
+      ),
     ],
     lessons: [
       lesson(
@@ -188,7 +250,6 @@ export const campaignChapters: CampaignChapter[] = [
         "One server, one ceiling",
         "A second route can share the crowd, but new capacity takes time to deploy.",
         "Horizontal scaling adds replicas. A load balancer spreads requests so no single server carries the full spike.",
-        14,
       ),
     ],
   }),
@@ -204,7 +265,7 @@ export const campaignChapters: CampaignChapter[] = [
     revenuePerRequest: 0.009,
     unlocked: ["client", "cdn", "load-balancer", "api-server", "cache", "primary-database"],
     startingProfile: {
-      replicas: { cdn: 2, "api-server": 2, "primary-database": 2 },
+      replicas: {},
       cdnConcurrency: 500,
     },
     durationSeconds: 64,
@@ -217,19 +278,67 @@ export const campaignChapters: CampaignChapter[] = [
       { atSecond: 43, type: "cache-failure", durationSeconds: 5 },
     ],
     successRequirements: {
-      activeComponents: ["cache"],
-      minimumReplicas: { "api-server": 6, "primary-database": 6 },
+      activeComponents: ["cdn", "cache"],
       requiredRoutes: [
+        { source: "client", target: "cdn" },
+        { source: "cdn", target: "load-balancer" },
         { source: "api-server", target: "cache" },
         { source: "cache", target: "primary-database" },
       ],
+      forbiddenRoutes: [
+        { source: "client", target: "load-balancer" },
+        { source: "api-server", target: "primary-database" },
+      ],
     },
     guidance: [
-      componentGuide("cache", 1, "Build a cache"),
-      componentGuide("api-server", 6, "Scale the API tier to six replicas"),
-      componentGuide("primary-database", 6, "Scale the database to six replicas"),
-      routeGuide("api-server", "cache", "Route API traffic to the cache"),
-      routeGuide("cache", "primary-database", "Route cache misses to the database"),
+      componentGuide(
+        "cdn",
+        1,
+        "The CDN catches cacheable traffic before it reaches your region.",
+        "Build a CDN",
+      ),
+      componentGuide(
+        "cache",
+        1,
+        "Repeated reads are faster when served from nearby memory.",
+        "Build a cache",
+      ),
+      routeGuide("client", "cdn", "Cacheable traffic reaches the edge first.", "Route clients to the CDN"),
+      routeGuide("cdn", "load-balancer", "CDN misses continue to the application.", "Route the CDN to the load balancer"),
+      routeGuide(
+        "api-server",
+        "cache",
+        "Let application reads check fast storage before durable storage.",
+        "Route API traffic to the cache",
+      ),
+      routeGuide(
+        "cache",
+        "primary-database",
+        "Missed lookups still need a path to durable storage.",
+        "Route cache misses to the database",
+      ),
+      noRouteGuide("client", "load-balancer", "The old public bypass has been removed.", "Remove the client-to-load-balancer bypass"),
+      noRouteGuide("api-server", "primary-database", "Reads now pass through the cache.", "Remove the direct API-to-database bypass"),
+    ],
+    refresher: [
+      refresher(
+        "cdn",
+        "Serve the edge first",
+        "A CDN handles repeatable content close to visitors, reducing work before it reaches your application.",
+        "It is a first line of defense when a popular link draws a crowd.",
+      ),
+      refresher(
+        "cache",
+        "Keep hot data nearby",
+        "A cache stores frequently requested data in fast memory so the API does not ask the database the same question thousands of times.",
+        "Connect API traffic through the cache before it reaches the primary database.",
+      ),
+      refresher(
+        "primary-database",
+        "Plan for cache misses",
+        "A cache cannot answer every request, and it can fail. Misses still need a safe route to durable storage.",
+        "Keep enough API and database capacity for the traffic that falls through the cache.",
+      ),
     ],
     lessons: [
       lesson(
@@ -237,7 +346,6 @@ export const campaignChapters: CampaignChapter[] = [
         "Popular data deserves a shortcut",
         "The database is repeating the same answer thousands of times.",
         "A cache serves repeated reads quickly, but expiry and failure can send the whole crowd back to the origin.",
-        10,
       ),
     ],
   }),
@@ -262,7 +370,7 @@ export const campaignChapters: CampaignChapter[] = [
       "worker",
     ],
     startingProfile: {
-      replicas: { "api-server": 3, "primary-database": 3 },
+      replicas: {},
       cdnConcurrency: 500,
     },
     durationSeconds: 70,
@@ -273,18 +381,68 @@ export const campaignChapters: CampaignChapter[] = [
     incidents: [{ atSecond: 36, type: "database-slowdown", durationSeconds: 8 }],
     successRequirements: {
       activeComponents: ["queue", "worker"],
+      minimumReplicas: { worker: 2 },
+      requireRetriesDisabled: true,
       requiredRoutes: [
+        { source: "api-server", target: "cache" },
+        { source: "cache", target: "primary-database" },
         { source: "api-server", target: "queue" },
         { source: "queue", target: "worker" },
         { source: "worker", target: "primary-database" },
       ],
     },
     guidance: [
-      componentGuide("queue", 1, "Build a queue"),
-      componentGuide("worker", 1, "Build a worker"),
-      routeGuide("api-server", "queue", "Route API work into the queue"),
-      routeGuide("queue", "worker", "Connect the queue to a worker"),
-      routeGuide("worker", "primary-database", "Connect the worker to the database"),
+      componentGuide(
+        "queue",
+        1,
+        "Buffer work when downstream services slow down.",
+        "Build a queue",
+      ),
+      componentGuide(
+        "worker",
+        2,
+        "Process buffered work outside the request path.",
+        "Run two worker replicas",
+      ),
+      routeGuide(
+        "api-server",
+        "queue",
+        "Send incoming work to a buffer before slow dependencies.",
+        "Route API work into the queue",
+      ),
+      routeGuide(
+        "queue",
+        "worker",
+        "Buffered work needs consumers to drain it.",
+        "Connect the queue to a worker",
+      ),
+      routeGuide(
+        "worker",
+        "primary-database",
+        "Consumers need a path to durable storage.",
+        "Connect the worker to the database",
+      ),
+      { kind: "retries-disabled", label: "Retries no longer amplify the slowdown.", hint: "Disable API retries" },
+    ],
+    refresher: [
+      refresher(
+        "queue",
+        "Separate arrival from processing",
+        "A queue buffers work when a downstream dependency slows down, instead of letting requests pile directly onto it.",
+        "Route API work into the queue before it reaches a struggling database.",
+      ),
+      refresher(
+        "worker",
+        "Drain work at a safe pace",
+        "Workers consume queued work outside the request path and write it to the database at a controlled rate.",
+        "Connect the queue to workers, then workers to durable storage.",
+      ),
+      refresher(
+        "backpressure",
+        "Do not amplify failure",
+        "When a dependency is slow, retries can create more work than the dependency can recover from.",
+        "Queues and workers apply backpressure: they keep work bounded while the slow tier catches up.",
+      ),
     ],
     lessons: [
       lesson(
@@ -292,7 +450,6 @@ export const campaignChapters: CampaignChapter[] = [
         "More retries, more pressure",
         "Failed work is returning faster than the database can recover.",
         "Timeouts, bounded retries, and queues protect a struggling dependency from an uncontrolled retry storm.",
-        12,
       ),
     ],
   }),
@@ -301,14 +458,14 @@ export const campaignChapters: CampaignChapter[] = [
     number: 5,
     name: "Global Launch",
     strapline: "Four regions. One launch. No quiet moments.",
-    concept: "Regions & autoscaling",
+    concept: "Regions & global routing",
     objective: "Complete the 18k req/s launch inside the reliability and cost targets.",
     startingCash: 58_000,
     completionReward: 50_000,
     revenuePerRequest: 0.007,
-    unlocked: [...componentTypes],
+    unlocked: ["client", "dns", "cdn", "load-balancer", "api-server", "cache", "primary-database", "queue", "worker"],
     startingProfile: {
-      replicas: { "api-server": 4, "primary-database": 4 },
+      replicas: {},
       cdnConcurrency: 500,
     },
     durationSeconds: 72,
@@ -316,8 +473,9 @@ export const campaignChapters: CampaignChapter[] = [
     spikeRps: 18_000,
     spikeAtSecond: 12,
     throughputTarget: 17_100,
-    availabilityTarget: 0.9995,
-    p95TargetMs: 180,
+    costCeiling: 70,
+    availabilityTarget: 0.95,
+    p95TargetMs: 900,
     incidents: [
       { atSecond: 18, type: "hot-key", durationSeconds: 6 },
       { atSecond: 28, type: "cache-failure", durationSeconds: 5 },
@@ -330,16 +488,60 @@ export const campaignChapters: CampaignChapter[] = [
       },
     ],
     successRequirements: {
-      activeComponents: ["cache", "queue", "worker"],
+      activeComponents: ["dns", "cache", "queue", "worker"],
+      minimumComponents: { "load-balancer": 2, "api-server": 2 },
       minimumRegions: 2,
+      minimumRegionalPaths: 2,
       requireWeightedRouting: true,
+      requiredRoutes: [
+        { source: "client", target: "dns" },
+        { source: "dns", target: "load-balancer" },
+        { source: "load-balancer", target: "api-server" },
+      ],
     },
     guidance: [
-      componentGuide("cache", 1, "Keep a cache in the request path"),
-      componentGuide("queue", 1, "Protect writes with a queue"),
-      componentGuide("worker", 1, "Drain queued work with a worker"),
-      { kind: "regions", minimum: 2, label: "Deploy services in two regions" },
-      { kind: "weighted-routing", label: "Split traffic with weighted routes" },
+      componentGuide("dns", 1, "DNS chooses a regional entry point before requests begin.", "Build DNS"),
+      componentCountGuide("load-balancer", 2, "Each region needs a managed entry point.", "Build a second load balancer"),
+      componentCountGuide("api-server", 2, "Each region needs application capacity.", "Build a second API server node"),
+      routeGuide("client", "dns", "Dynamic traffic asks DNS for a regional endpoint.", "Connect clients to DNS"),
+      routeGuide("dns", "load-balancer", "DNS can select either regional entry point.", "Connect DNS to both load balancers"),
+      {
+        kind: "regions",
+        minimum: 2,
+        label: "Regional capacity reduces distance and isolates failures.",
+        hint: "Deploy services in two regions",
+      },
+      {
+        kind: "weighted-routing",
+        label: "Traffic distribution can shift demand between regions.",
+        hint: "Split traffic with weighted routes",
+      },
+    ],
+    refresher: [
+      refresher(
+        "cache",
+        "Keep repeated reads off the origin",
+        "Use the cache to protect primary storage from hot data, but expect misses and temporary cache failures.",
+        "Your architecture still needs enough origin capacity to recover when requests fall through.",
+      ),
+      refresher(
+        "queue",
+        "Buffer slow writes",
+        "Queues keep incoming work from overwhelming a slow dependency. Workers drain that work at a sustainable rate.",
+        "Use both to contain a database slowdown instead of turning it into a retry storm.",
+      ),
+      refresher(
+        "regions",
+        "Put capacity near the crowd",
+        "Deploy services across regions to reduce network distance and limit the blast radius of a regional problem.",
+        "Use at least two regions so one slow route does not define the whole launch.",
+      ),
+      refresher(
+        "weighted-routing",
+        "Steer the traffic",
+        "Weighted routes split traffic across healthy capacity. They let you shift demand rather than treating every destination equally.",
+        "Balance traffic across your regional paths while keeping cost and recovery in view.",
+      ),
     ],
     lessons: [
       lesson(
@@ -347,7 +549,6 @@ export const campaignChapters: CampaignChapter[] = [
         "Distance is part of latency",
         "A healthy service can still feel slow when every request crosses an ocean.",
         "Regional placement and weighted routing trade cost and complexity for lower latency and better failure isolation.",
-        6,
       ),
     ],
   }),
@@ -377,6 +578,7 @@ export const sandboxChapter: CampaignChapter = {
 
 export const buildingCosts: Record<ComponentType, number> = {
   client: 0,
+  dns: 2_500,
   cdn: 4_000,
   "load-balancer": 3_500,
   "api-server": 5_000,
@@ -423,7 +625,6 @@ export function createTycoonState(mode: GameMode, chapterId?: string): TycoonSta
     revenue: 0,
     operatingCost: 0,
     eventLog: [mode === "sandbox" ? "Sandbox gates are open." : `${current.name} is ready.`],
-    encounteredConcepts: [],
   };
 }
 
@@ -546,7 +747,20 @@ export function campaignParkForChapter(
   progress: GameProgress,
   chapter: CampaignChapter,
 ): CampaignParkState {
-  if (progress.campaignPark) return structuredClone(progress.campaignPark);
+  if (progress.campaignPark) {
+    const park = structuredClone(progress.campaignPark);
+    if (
+      chapter.number === 4 &&
+      !park.architecture.nodes.some((node) => node.type === "queue")
+    ) {
+      park.architecture.nodes = park.architecture.nodes.map((node) =>
+        node.type === "api-server"
+          ? { ...node, config: { ...node.config, retries: 1 } }
+          : node,
+      );
+    }
+    return park;
+  }
   return {
     architecture: architectureForChapter(chapter),
     cash: chapter.startingCash,
@@ -600,17 +814,22 @@ export function architectureForChapter(chapter: CampaignChapter): Architecture {
   const allowed = new Set(chapter.unlocked);
   const nodes = base.nodes
     .filter((node) => allowed.has(node.type))
-    .map((node) => ({
-      ...node,
-      config: {
-        ...node.config,
-        replicas: chapter.startingProfile.replicas[node.type] ?? node.config.replicas,
-        concurrency:
-          node.type === "cdn"
-            ? (chapter.startingProfile.cdnConcurrency ?? node.config.concurrency)
-            : node.config.concurrency,
-      },
-    }));
+    .map((node) => {
+      const chapterDatabaseUpgrade =
+        chapter.number >= 2 && node.type === "primary-database" ? databaseUpgrade(node) : undefined;
+      return {
+        ...node,
+        config: {
+          ...node.config,
+          ...chapterDatabaseUpgrade,
+          replicas: chapter.startingProfile.replicas[node.type] ?? node.config.replicas,
+          concurrency:
+            node.type === "cdn"
+              ? (chapter.startingProfile.cdnConcurrency ?? node.config.concurrency)
+              : (chapterDatabaseUpgrade?.concurrency ?? node.config.concurrency),
+        },
+      };
+    });
   const ids = new Set(nodes.map((node) => node.id));
   let edges = base.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target));
   const client = nodes.find((node) => node.type === "client");
@@ -622,6 +841,7 @@ export function architectureForChapter(chapter: CampaignChapter): Architecture {
         source: client.id,
         target: api.id,
         weight: 100,
+        purpose: trafficPurposeForConnection(client.type, api.type),
       },
       ...edges,
     ];
@@ -642,6 +862,10 @@ export function evaluateChapterGuidance(
         .reduce((total, node) => total + node.config.replicas, 0);
       return { ...requirement, complete: replicas >= requirement.minimumReplicas };
     }
+    if (requirement.kind === "component-count") {
+      const count = architecture.nodes.filter((node) => node.type === requirement.type).length;
+      return { ...requirement, complete: count >= requirement.minimum };
+    }
     if (requirement.kind === "route") {
       const complete = architecture.edges.some((edge) => {
         const source = nodesById.get(edge.source);
@@ -652,6 +876,29 @@ export function evaluateChapterGuidance(
           reachable.has(source.id)
         );
       });
+      return { ...requirement, complete };
+    }
+    if (requirement.kind === "no-route") {
+      const complete = !architecture.edges.some((edge) => {
+        const source = nodesById.get(edge.source);
+        const target = nodesById.get(edge.target);
+        return source?.type === requirement.source && target?.type === requirement.target;
+      });
+      return { ...requirement, complete };
+    }
+    if (requirement.kind === "database-upgrade") {
+      const level = Math.max(
+        0,
+        ...architecture.nodes
+          .filter((node) => node.type === "primary-database")
+          .map(databaseCapacityLevel),
+      );
+      return { ...requirement, complete: level >= requirement.minimumLevel };
+    }
+    if (requirement.kind === "retries-disabled") {
+      const complete = architecture.nodes
+        .filter((node) => node.type === "api-server")
+        .every((node) => node.config.retries === 0);
       return { ...requirement, complete };
     }
     if (requirement.kind === "regions") {
@@ -684,7 +931,10 @@ export function evaluateChapterGuidance(
  * future incidents and lesson requirements: it checks only the state the player
  * inherits at second zero through the first pressure event.
  */
-export function validateChapterStartingState(chapter: CampaignChapter) {
+export function validateChapterStartingState(
+  chapter: CampaignChapter,
+  architecture = architectureForChapter(chapter),
+) {
   const scenario: Scenario = {
     ...chapter.scenario,
     durationSeconds: chapter.scenario.spikeAtSecond,
@@ -692,7 +942,7 @@ export function validateChapterStartingState(chapter: CampaignChapter) {
     successRequirements: undefined,
   };
   const result = runSimulation(
-    architectureForChapter(chapter),
+    architecture,
     scenario,
     [],
     CAMPAIGN_SIMULATION_SEED,
@@ -714,6 +964,7 @@ type ChapterInput = Omit<CampaignChapter, "scenario" | "economy"> & {
   throughputTarget: number;
   availabilityTarget?: number;
   p95TargetMs?: number;
+  costCeiling?: number;
   incidents?: Scenario["incidents"];
   successRequirements?: Scenario["successRequirements"];
 };
@@ -727,6 +978,7 @@ function chapter(input: ChapterInput): CampaignChapter {
     throughputTarget,
     availabilityTarget,
     p95TargetMs,
+    costCeiling,
     incidents,
     successRequirements,
     ...metadata
@@ -750,6 +1002,7 @@ function chapter(input: ChapterInput): CampaignChapter {
       throughputTarget,
       availabilityTarget: availabilityTarget ?? baseTargets.availabilityTarget,
       p95TargetMs: p95TargetMs ?? baseTargets.p95TargetMs,
+      costCeiling: costCeiling ?? baseTargets.costCeiling,
       incidents: incidents ?? [],
       successRequirements,
     },
@@ -761,25 +1014,56 @@ function lesson(
   title: string,
   message: string,
   detail: string,
-  promptAtSecond?: number,
 ): AdvisorLesson {
-  return { concept, title, message, detail, promptAtSecond };
+  return { concept, title, message, detail };
+}
+
+function refresher(concept: string, title: string, message: string, detail: string): AdvisorLesson {
+  return { concept, title, message, detail };
 }
 
 function componentGuide(
   type: ComponentType,
   minimumReplicas: number,
   label: string,
+  hint: string,
 ): ChapterGuidanceRequirement {
-  return { kind: "component", type, minimumReplicas, label };
+  return { kind: "component", type, minimumReplicas, label, hint };
+}
+
+function componentCountGuide(
+  type: ComponentType,
+  minimum: number,
+  label: string,
+  hint: string,
+): ChapterGuidanceRequirement {
+  return { kind: "component-count", type, minimum, label, hint };
+}
+
+function databaseUpgradeGuide(
+  minimumLevel: number,
+  label: string,
+  hint: string,
+): ChapterGuidanceRequirement {
+  return { kind: "database-upgrade", minimumLevel, label, hint };
+}
+
+function noRouteGuide(
+  source: ComponentType,
+  target: ComponentType,
+  label: string,
+  hint: string,
+): ChapterGuidanceRequirement {
+  return { kind: "no-route", source, target, label, hint };
 }
 
 function routeGuide(
   source: ComponentType,
   target: ComponentType,
   label: string,
+  hint: string,
 ): ChapterGuidanceRequirement {
-  return { kind: "route", source, target, label };
+  return { kind: "route", source, target, label, hint };
 }
 
 function reachableNodeIds(architecture: Architecture) {

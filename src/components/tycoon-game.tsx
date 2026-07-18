@@ -7,6 +7,7 @@ import {
   CircleDollarSign,
   CircleCheck,
   CircleDashed,
+  CircleHelp,
   Cloud,
   Database,
   Download,
@@ -15,6 +16,7 @@ import {
   Globe2,
   HardDrive,
   Heart,
+  ListChecks,
   Minus,
   Network,
   Pause,
@@ -49,10 +51,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 import {
+  canConnectComponents,
+  componentRoles,
+  controlsReplicas,
   createNode,
+  databaseCapacityLevel,
+  databaseUpgrade,
   exportArchitecture,
   importArchitecture,
   starterArchitecture,
+  trafficPurposeForConnection,
+  trafficPurposeLabel,
   type Architecture,
   type ArchitectureEdge,
   type ArchitectureNode,
@@ -78,6 +87,7 @@ import {
   saveGameProgress,
   type AdvisorLesson,
   type CampaignChapter,
+  type ChapterGuidanceStatus,
   type GameMode,
   type GameProgress,
   type GameSpeed,
@@ -119,13 +129,16 @@ type GameWorkerEvent =
   | { type: "error"; message: string }
   | { type: "started" | "paused" | "resumed" | "reset" | "commands-accepted" };
 const REPLICA_DEPLOYMENT_COST = 1_800;
+const WORKER_REPLICA_DEPLOYMENT_COST = 1_200;
+const DATABASE_UPGRADE_COST = 4_000;
 
 const buildingMeta: Record<
   ComponentType,
   { name: string; short: string; icon: typeof Server; color: string }
 > = {
   client: { name: "Clients", short: "Clients", icon: Users, color: "mint" },
-  cdn: { name: "DNS / CDN", short: "DNS / CDN", icon: Globe2, color: "sky" },
+  dns: { name: "DNS", short: "DNS", icon: Globe2, color: "mint" },
+  cdn: { name: "CDN", short: "CDN", icon: Globe2, color: "sky" },
   "load-balancer": {
     name: "Load balancer",
     short: "Balancer",
@@ -169,7 +182,9 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   const [pendingRoutes, setPendingRoutes] = useState<PendingRoute[]>([]);
   const [pendingDisconnections, setPendingDisconnections] = useState<PendingDisconnection[]>([]);
   const [pendingRemovals, setPendingRemovals] = useState<PendingRemoval[]>([]);
-  const [advisor, setAdvisor] = useState<AdvisorLesson | null>(null);
+  const [refresherStep, setRefresherStep] = useState<number | null>(null);
+  const [advisorHintOpen, setAdvisorHintOpen] = useState(false);
+  const [exactStepsOpen, setExactStepsOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
   const [notice, setNotice] = useState("Choose a chapter to open your park.");
   const [attemptHistory, setAttemptHistory] = useState<AttemptHistory>(() =>
@@ -186,6 +201,7 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   const completionHandled = useRef<string | null>(null);
 
   const currentChapter = chapterById(game.chapterId);
+  const refresher = refresherStep === null ? null : currentChapter.refresher[refresherStep] ?? null;
   const pendingDisconnectionIds = useMemo(
     () => new Set(pendingDisconnections.map((disconnection) => disconnection.edgeId)),
     [pendingDisconnections],
@@ -353,29 +369,6 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   }, [game.second, pendingDisconnections, pendingRemovals, pendingRoutes]);
 
   useEffect(() => {
-    if (!snapshot || game.phase !== "running") return;
-    const lesson = currentChapter.lessons.find(
-      (item) => !game.encounteredConcepts.includes(item.concept) && shouldTeach(item, snapshot),
-    );
-    if (!lesson) return;
-    setAdvisor(lesson);
-    setGame((current) => ({
-      ...current,
-      phase: "paused",
-      encounteredConcepts: [...current.encounteredConcepts, lesson.concept],
-      eventLog: [`Advisor: ${lesson.title}`, ...current.eventLog].slice(0, 8),
-    }));
-    setProgress((current) => {
-      const next = {
-        ...current,
-        encounteredConcepts: [...new Set([...current.encounteredConcepts, lesson.concept])],
-      };
-      saveGameProgress(window.localStorage, next);
-      return next;
-    });
-  }, [currentChapter.lessons, game.encounteredConcepts, game.phase, snapshot]);
-
-  useEffect(() => {
     if (
       game.phase !== "completed" ||
       game.mode !== "campaign" ||
@@ -476,11 +469,14 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   }, [architecture, game.chapterId, game.phase, liveResult]);
 
   function startGame(mode: GameMode, chapter: CampaignChapter) {
-    if (mode === "campaign" && !validateChapterStartingState(chapter).safe) {
+    const carriedPark = mode === "campaign" ? campaignParkForChapter(progress, chapter) : null;
+    if (
+      mode === "campaign" &&
+      !validateChapterStartingState(chapter, carriedPark!.architecture).safe
+    ) {
       setNotice("This chapter's starting runway is unsafe. Please reload after it is repaired.");
       return;
     }
-    const carriedPark = mode === "campaign" ? campaignParkForChapter(progress, chapter) : null;
     const nextArchitecture =
       mode === "sandbox" ? initialArchitecture(progress) : carriedPark!.architecture;
     const nextGame = {
@@ -521,8 +517,13 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
     setPendingDisconnections([]);
     setPendingRemovals([]);
     setConnectionSource(null);
-    setAdvisor(null);
-    setNotice(`${chapter.name} loaded. Press play when you are ready for traffic.`);
+    setRefresherStep(mode === "campaign" ? 0 : null);
+    setAdvisorHintOpen(false);
+    setNotice(
+      mode === "campaign"
+        ? `Mina has a refresher for ${chapter.name}.`
+        : `${chapter.name} loaded. Press play when you are ready for traffic.`,
+    );
     setActiveLevelId(chapter.id);
   }
 
@@ -614,6 +615,10 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
       setNotice("A component cannot route traffic to itself.");
       return false;
     }
+    if (!canConnectComponents(source.type, target.type)) {
+      setNotice(`${source.label} cannot connect to ${target.label}. Choose a valid system path.`);
+      return false;
+    }
     if (pendingRemovalIds.has(sourceId) || pendingRemovalIds.has(targetId)) {
       setNotice("Wait for the pending component removal before changing its routes.");
       return false;
@@ -637,6 +642,7 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
       source: sourceId,
       target: targetId,
       weight: 100,
+      purpose: trafficPurposeForConnection(source.type, target.type),
     };
     if (isPlanningPhase) {
       syncPlanningArchitecture(
@@ -688,6 +694,7 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
     const hasDestination = architecture.nodes.some(
       (node) =>
         node.id !== sourceId &&
+        canConnectComponents(source.type, node.type) &&
         !pendingRemovalIds.has(node.id) &&
         !architecture.edges.some(
           (edge) => edge.source === sourceId && edge.target === node.id,
@@ -711,8 +718,10 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   }
 
   function addReplica(replicaDelta: number) {
-    const deploymentCost = replicaDelta * REPLICA_DEPLOYMENT_COST;
-    if (!selected || selected.type === "client" || replicaDelta < 1 || game.cash < deploymentCost)
+    if (!selected || !controlsReplicas(selected.type)) return;
+    const unitCost = selected.type === "worker" ? WORKER_REPLICA_DEPLOYMENT_COST : REPLICA_DEPLOYMENT_COST;
+    const deploymentCost = replicaDelta * unitCost;
+    if (replicaDelta < 1 || game.cash < deploymentCost)
       return setNotice(
         `You need ${formatMoney(deploymentCost)} to deploy ${replicaDelta} replicas.`,
       );
@@ -765,6 +774,27 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
     setNotice(
       `${selected.label} gains ${replicaDelta} ${replicaDelta === 1 ? "replica" : "replicas"} in 3 simulated seconds.`,
     );
+  }
+
+  function upgradeSelectedDatabase() {
+    if (!selected || selected.type !== "primary-database") return;
+    const changes = databaseUpgrade(selected);
+    if (!changes) return setNotice("Primary database capacity is already at the V1 maximum.");
+    if (game.cash < DATABASE_UPGRADE_COST) {
+      return setNotice(`You need ${formatMoney(DATABASE_UPGRADE_COST)} to upgrade the database.`);
+    }
+    updateSelectedConfig({
+      atSecond: game.second,
+      type: "configure",
+      nodeId: selected.id,
+      changes,
+      deploymentDelaySeconds: 2,
+    });
+    setGame((current) => ({
+      ...current,
+      cash: current.cash - DATABASE_UPGRADE_COST,
+      eventLog: [`${selected.label} capacity upgrade ordered.`, ...current.eventLog].slice(0, 8),
+    }));
   }
 
   function removeSelected() {
@@ -903,7 +933,6 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
       commands: [],
       seed: CAMPAIGN_SIMULATION_SEED,
     });
-    setAdvisor(null);
     setNotice("Checkpoint restored. Adjust the park before traffic resumes.");
   }
 
@@ -1014,6 +1043,12 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
         onImport={() => importInput.current?.click()}
         onPlay={togglePlay}
         onSpeed={(speed) => setGame((current) => ({ ...current, speed }))}
+        guidance={guidance}
+        exactStepsOpen={exactStepsOpen}
+        onExactSteps={() => {
+          setAdvisorHintOpen(false);
+          setExactStepsOpen((open) => !open);
+        }}
       />
       <input
         ref={importInput}
@@ -1028,48 +1063,48 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
           <span className="mission-kicker">
             {game.mode === "sandbox" ? "Free build" : `Chapter ${currentChapter.number}`}
           </span>
+          {game.mode === "campaign" && guidance.length > 0 && (
+            <div className="advisor-hint">
+              <button
+                className={`journal-button advisor-hint-button ${advisorHintOpen ? "active" : ""}`}
+                type="button"
+                aria-label={advisorHintOpen ? "Hide advisor plan" : "Show advisor plan"}
+                aria-expanded={advisorHintOpen}
+                aria-controls="advisor-hint-popover"
+                onClick={() => {
+                  setExactStepsOpen(false);
+                  setAdvisorHintOpen((open) => !open);
+                }}
+              >
+                <ListChecks />
+              </button>
+              <section
+                className="advisor-hint-popover"
+                id="advisor-hint-popover"
+                hidden={!advisorHintOpen}
+                aria-label="Advisor plan"
+              >
+                <div className="advisor-hint-heading">
+                  <b>Advisor plan</b>
+                  <span>{guidance.filter((item) => item.complete).length}/{guidance.length}</span>
+                </div>
+                {isPlanningPhase && <p>Prepare your park before launching the traffic wave.</p>}
+                <ul className="advisor-hint-checklist">
+                  {guidance.map((item) => (
+                    <li className={item.complete ? "complete" : ""} key={item.label}>
+                      {item.complete ? <CircleCheck /> : <CircleDashed />}
+                      <span>{item.label}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            </div>
+          )}
           <h1>{currentChapter.name}</h1>
-          <p>{currentChapter.strapline}</p>
           <div className="mission-objective">
             <ShieldCheck size={17} />
             <span>{currentChapter.objective}</span>
           </div>
-          {game.mode === "campaign" && (
-            <div className="mission-reward">
-              <Banknote size={14} />
-              <span>Mission reward</span>
-              <b>{formatMoney(currentChapter.completionReward)}</b>
-            </div>
-          )}
-          {game.mode === "campaign" && guidance.length > 0 && (
-            <div className="mission-readiness" aria-label="Suggested upgrades">
-              <div className="mission-readiness-heading">
-                <b>Advisor plan</b>
-                <span>
-                  {guidance.filter((item) => item.complete).length}/{guidance.length}
-                </span>
-              </div>
-              {isPlanningPhase && (
-                <p>Upgrade your persistent park before launching this traffic wave.</p>
-              )}
-              <ul>
-                {guidance.map((item) => (
-                  <li className={item.complete ? "complete" : ""} key={item.label}>
-                    {item.complete ? <CircleCheck /> : <CircleDashed />}
-                    <span>{item.label}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <div className="mission-progress">
-            <span
-              style={{
-                width: `${(game.second / currentChapter.scenario.durationSeconds) * 100}%`,
-              }}
-            />
-          </div>
-          <small>Next traffic wave at {formatClock(currentChapter.scenario.spikeAtSecond)}</small>
         </aside>
 
         <BuildDock cash={game.cash} chapter={currentChapter} onBuild={(type) => build(type)} />
@@ -1098,10 +1133,12 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
         {selected && (
           <BuildingInspector
             cash={game.cash}
+            chapterNumber={currentChapter.number}
             node={selected}
             snapshot={snapshot}
             onClose={() => setSelectedId("")}
             onReplica={addReplica}
+            onUpgradeDatabase={upgradeSelectedDatabase}
             onRemove={removeSelected}
             routes={architecture.edges
               .filter((edge) => edge.source === selected.id)
@@ -1110,6 +1147,7 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
                 label:
                   architecture.nodes.find((node) => node.id === edge.target)?.label ??
                   "Destination",
+                purpose: trafficPurposeLabel(edge.purpose),
                 pendingDisconnect: pendingDisconnectionIds.has(edge.id),
               }))}
             onRouteWeight={updateRouteWeight}
@@ -1133,12 +1171,35 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
         <EventTicker game={game} snapshot={snapshot} />
       </section>
 
-      {advisor && (
+      {refresher && (
         <AdvisorDialog
-          lesson={advisor}
+          lesson={refresher}
+          progress={{ current: refresherStep! + 1, total: currentChapter.refresher.length }}
+          actionLabel={
+            refresherStep! + 1 === currentChapter.refresher.length
+              ? "Start planning"
+              : "Next refresher"
+          }
           onContinue={() => {
-            setAdvisor(null);
-            setNotice("Lesson saved. Adjust the park, then press play when ready.");
+            if (refresherStep! + 1 < currentChapter.refresher.length) {
+              setRefresherStep(refresherStep! + 1);
+              return;
+            }
+            setProgress((current) => {
+              const next = {
+                ...current,
+                encounteredConcepts: [
+                  ...new Set([
+                    ...current.encounteredConcepts,
+                    ...currentChapter.lessons.map((lesson) => lesson.concept),
+                  ]),
+                ],
+              };
+              saveGameProgress(window.localStorage, next);
+              return next;
+            });
+            setRefresherStep(null);
+            setNotice("Refresher complete. Adjust the park, then press play when ready.");
           }}
         />
       )}
@@ -1285,6 +1346,9 @@ function GameHud({
   onImport,
   onPlay,
   onSpeed,
+  guidance,
+  exactStepsOpen,
+  onExactSteps,
 }: {
   game: TycoonState;
   snapshot?: Snapshot;
@@ -1294,6 +1358,9 @@ function GameHud({
   onImport: () => void;
   onPlay: () => void;
   onSpeed: (speed: GameSpeed) => void;
+  guidance: ChapterGuidanceStatus[];
+  exactStepsOpen: boolean;
+  onExactSteps: () => void;
 }) {
   return (
     <header className="game-hud">
@@ -1368,6 +1435,33 @@ function GameHud({
       <button className="journal-button" type="button" onClick={onImport} aria-label="Import park">
         <Upload />
       </button>
+      {game.mode === "campaign" && guidance.length > 0 && (
+        <div className="navbar-hint">
+          <button
+            className={`journal-button advisor-hint-button ${exactStepsOpen ? "active" : ""}`}
+            type="button"
+            aria-label={exactStepsOpen ? "Hide exact steps" : "Show exact steps"}
+            aria-expanded={exactStepsOpen}
+            aria-controls="exact-steps-popover"
+            onClick={onExactSteps}
+          >
+            <CircleHelp />
+          </button>
+          <section
+            className="exact-steps-popover"
+            id="exact-steps-popover"
+            hidden={!exactStepsOpen}
+            aria-label="Exact steps"
+          >
+            <b>Exact steps</b>
+            <ul>
+              {guidance.map((item) => (
+                <li key={item.hint}>{item.hint}</li>
+              ))}
+            </ul>
+          </section>
+        </div>
+      )}
     </header>
   );
 }
@@ -1499,8 +1593,13 @@ function ParkMap({
   const connectionGestureRef = useRef(connectionGesture);
   const suppressConnectorClick = useRef<string | null>(null);
   const activeConnectionSource = connectionGesture?.sourceId ?? connectionSource;
-  const isEligibleDestination = (sourceId: string, targetId: string) =>
+  const isEligibleDestination = (sourceId: string, targetId: string) => {
+    const source = architecture.nodes.find((node) => node.id === sourceId);
+    const target = architecture.nodes.find((node) => node.id === targetId);
+    return Boolean(
+    source && target &&
     sourceId !== targetId &&
+    canConnectComponents(source.type, target.type) &&
     !pendingRemovalIds.has(sourceId) &&
     !pendingRemovalIds.has(targetId) &&
     !architecture.edges.some(
@@ -1508,7 +1607,8 @@ function ParkMap({
     ) &&
     !pendingRoutes.some(
       ({ edge }) => edge.source === sourceId && edge.target === targetId,
-    );
+    ));
+  };
   const hasEligibleDestination = (sourceId: string) =>
     architecture.nodes.some((node) => isEligibleDestination(sourceId, node.id));
   const setGesture = (
@@ -1957,7 +2057,7 @@ function Building({
           drag.current = null;
           setDragging(false);
         }}
-        aria-label={`${node.label}, ${health ?? "healthy"}, ${replicas} replicas`}
+        aria-label={`${node.label}, ${health ?? "healthy"}${controlsReplicas(node.type) ? `, ${replicas} replicas` : ""}`}
       >
         <span className="building-status">{health ?? "healthy"}</span>
         <span className="building-roof">
@@ -1970,7 +2070,7 @@ function Building({
         </span>
         <span className="building-label">
           <b>{node.label}</b>
-          <small>×{replicas}</small>
+          {controlsReplicas(node.type) && <small>×{replicas}</small>}
         </span>
         {(health === "heating" || health === "saturated" || health === "failed") && (
           <span className="building-smoke">● ●</span>
@@ -2001,8 +2101,10 @@ function BuildingInspector({
   node,
   snapshot,
   cash,
+  chapterNumber,
   onClose,
   onReplica,
+  onUpgradeDatabase,
   onRemove,
   onConfigure,
   routes,
@@ -2012,13 +2114,16 @@ function BuildingInspector({
   node: ArchitectureNode;
   snapshot?: Snapshot;
   cash: number;
+  chapterNumber: number;
   onClose: () => void;
   onReplica: (replicaDelta: number) => void;
+  onUpgradeDatabase: () => void;
   onRemove: () => void;
   onConfigure: (changes: Partial<Omit<ComponentConfig, "replicas">>) => void;
   routes: {
     edge: ArchitectureEdge;
     label: string;
+    purpose: string;
     pendingDisconnect: boolean;
   }[];
   onRouteWeight: (edgeId: string, weight: number) => void;
@@ -2041,7 +2146,16 @@ function BuildingInspector({
     setActionsOpen(false);
   }, [node.id]);
   const replicaDelta = Math.max(0, desiredReplicas - activeReplicas);
-  const replicaCost = replicaDelta * REPLICA_DEPLOYMENT_COST;
+  const replicaUnitCost = node.type === "worker" ? WORKER_REPLICA_DEPLOYMENT_COST : REPLICA_DEPLOYMENT_COST;
+  const replicaCost = replicaDelta * replicaUnitCost;
+  const routedTraffic = snapshot?.routeAllocations
+    .filter((route) => route.sourceNodeId === node.id)
+    .reduce((total, route) => total + route.offered, 0) ?? 0;
+  const primaryMetric = componentPrimaryMetric(node, snapshot, activeReplicas, routedTraffic);
+  const canEditCacheTtl = node.type === "cache" && (chapterNumber === 0 || chapterNumber >= 3);
+  const canEditRetries = node.type === "api-server" && (chapterNumber === 0 || chapterNumber === 4);
+  const canEditRegion = ["load-balancer", "api-server"].includes(node.type) && (chapterNumber === 0 || chapterNumber >= 5);
+  const hasConfiguration = canEditCacheTtl || canEditRetries || canEditRegion || node.type === "primary-database";
   const configurationPanelId = `inspector-configuration-${node.id}`;
   const trafficPanelId = `inspector-traffic-${node.id}`;
   return (
@@ -2070,22 +2184,23 @@ function BuildingInspector({
         </div>
         <dl className="inspector-overview">
           <div>
-            <dt>Replicas</dt>
-            <dd>{activeReplicas}</dd>
+            <dt>{primaryMetric.label}</dt>
+            <dd>{primaryMetric.value}</dd>
           </div>
           <div>
-            <dt>Capacity</dt>
-            <dd>{(node.config.capacity * activeReplicas).toLocaleString()}/sec</dd>
+            <dt>Health</dt>
+            <dd>{nodeHealth}</dd>
           </div>
           <div>
-            <dt>Service time</dt>
-            <dd>{node.config.serviceTimeMs} ms</dd>
+            <dt>Role</dt>
+            <dd>{controlsReplicas(node.type) ? `${activeReplicas} running` : "Managed"}</dd>
           </div>
         </dl>
+        <p className="inspector-role">{componentRoles[node.type]}</p>
       </header>
 
       <div className="inspector-scroll">
-        <section className="inspector-section inspector-accordion">
+        {hasConfiguration && <section className="inspector-section inspector-accordion">
           <button
             className="inspector-accordion-trigger"
             type="button"
@@ -2104,7 +2219,7 @@ function BuildingInspector({
             hidden={openSection !== "configuration"}
           >
             <div className="inspector-config">
-              <label>
+              {canEditRegion && <label>
                 <span>Region</span>
                 <select
                   aria-label="Component region"
@@ -2120,21 +2235,8 @@ function BuildingInspector({
                   <option value="eu-west">EU West</option>
                   <option value="ap-south">AP South</option>
                 </select>
-              </label>
-              {node.type === "cache" && (
-                <>
-                  <label>
-                    <span>
-                      Cache size <small>entries</small>
-                    </span>
-                    <input
-                      aria-label="Cache size"
-                      type="number"
-                      min="100"
-                      value={node.config.cacheSize}
-                      onChange={(event) => onConfigure({ cacheSize: Number(event.target.value) })}
-                    />
-                  </label>
+              </label>}
+              {canEditCacheTtl && (
                   <label>
                     <span>
                       TTL <small>sec</small>
@@ -2147,89 +2249,36 @@ function BuildingInspector({
                       onChange={(event) => onConfigure({ ttlSeconds: Number(event.target.value) })}
                     />
                   </label>
-                </>
               )}
-              {(["load-balancer", "api-server", "worker"] as ComponentType[]).includes(
-                node.type,
-              ) && (
-                <>
-                  <label>
-                    <span>
-                      Timeout <small>ms</small>
-                    </span>
-                    <input
-                      aria-label="Timeout milliseconds"
-                      type="number"
-                      min="1"
-                      value={node.config.timeoutMs}
-                      onChange={(event) => onConfigure({ timeoutMs: Number(event.target.value) })}
-                    />
-                  </label>
-                  <label>
-                    <span>Retries</span>
-                    <input
-                      aria-label="Retry attempts"
-                      type="number"
-                      min="0"
-                      max="10"
-                      value={node.config.retries}
-                      onChange={(event) => onConfigure({ retries: Number(event.target.value) })}
-                    />
-                  </label>
+              {canEditRetries && (
                   <label className="inspector-check">
                     <span>
-                      <b>Autoscaling</b>
-                      <small>Adjust replicas with demand</small>
+                      <b>Retry failed requests</b>
+                      <small>Retries can amplify a slow dependency</small>
                     </span>
                     <input
-                      aria-label="Enable autoscaling"
+                      aria-label="Retry failed requests"
                       type="checkbox"
-                      checked={node.config.autoscaling.enabled}
-                      onChange={(event) =>
-                        onConfigure({
-                          autoscaling: {
-                            ...node.config.autoscaling,
-                            enabled: event.target.checked,
-                          },
-                        })
-                      }
+                      checked={node.config.retries > 0}
+                      onChange={(event) => onConfigure({ retries: event.target.checked ? 1 : 0 })}
                     />
                   </label>
-                </>
               )}
-              {node.type === "queue" && (
-                <label>
-                  <span>
-                    Queue capacity <small>requests</small>
-                  </span>
-                  <input
-                    aria-label="Queue capacity"
-                    type="number"
-                    min="1"
-                    value={node.config.queueCapacity}
-                    onChange={(event) => onConfigure({ queueCapacity: Number(event.target.value) })}
-                  />
-                </label>
-              )}
-              {(["primary-database", "read-replica"] as ComponentType[]).includes(node.type) && (
-                <label>
-                  <span>Connection limit</span>
-                  <input
-                    aria-label="Database connection limit"
-                    type="number"
-                    min="1"
-                    value={node.config.connectionLimit}
-                    onChange={(event) =>
-                      onConfigure({
-                        connectionLimit: Number(event.target.value),
-                      })
-                    }
-                  />
-                </label>
+              {node.type === "primary-database" && (
+                <div className="database-upgrade">
+                  <span>Capacity level {databaseCapacityLevel(node)} of 3</span>
+                  <button
+                    type="button"
+                    disabled={!databaseUpgrade(node) || cash < DATABASE_UPGRADE_COST}
+                    onClick={onUpgradeDatabase}
+                  >
+                    Upgrade capacity <b>{formatMoney(DATABASE_UPGRADE_COST)}</b>
+                  </button>
+                </div>
               )}
             </div>
           </div>
-        </section>
+        </section>}
 
         <section className="inspector-section inspector-accordion inspector-routes">
           <button
@@ -2252,13 +2301,14 @@ function BuildingInspector({
               <p className="inspector-empty">No outbound routes</p>
             ) : (
               <div className="inspector-route-list">
-                {routes.map(({ edge, label, pendingDisconnect }) => (
+                {routes.map(({ edge, label, purpose, pendingDisconnect }) => (
                   <div className="inspector-route-config" key={edge.id}>
                     <div className="inspector-route-destination">
                       <span>Destination</span>
                       <strong title={label}>{label}</strong>
+                      <small>{purpose}</small>
                     </div>
-                    <label>
+                    {node.type === "dns" && (chapterNumber === 0 || chapterNumber >= 5) && <label>
                       <span>
                         Traffic <small>%</small>
                       </span>
@@ -2270,7 +2320,7 @@ function BuildingInspector({
                         value={edge.weight}
                         onChange={(event) => onRouteWeight(edge.id, Number(event.target.value))}
                       />
-                    </label>
+                    </label>}
                     <button
                       type="button"
                       disabled={pendingDisconnect}
@@ -2289,7 +2339,7 @@ function BuildingInspector({
       </div>
 
       <footer className="inspector-actions">
-        {node.type !== "client" && (
+        {controlsReplicas(node.type) && (
           <div className="replica-planner">
             <div className="replica-target">
               <div>
@@ -2366,6 +2416,31 @@ function BuildingInspector({
   );
 }
 
+function componentPrimaryMetric(
+  node: ArchitectureNode,
+  snapshot: Snapshot | undefined,
+  activeReplicas: number,
+  routedTraffic: number,
+) {
+  if (node.type === "client") return { label: "Requests", value: `${(snapshot?.offered ?? 0).toLocaleString()}/s` };
+  if (node.type === "cdn") {
+    return { label: "Edge hit", value: `${Math.round((snapshot?.cdnHitRate ?? 0) * 100)}%` };
+  }
+  if (node.type === "cache") {
+    return { label: "Cache hit", value: `${Math.round((snapshot?.cacheHitRate ?? 0) * 100)}%` };
+  }
+  if (node.type === "primary-database") {
+    return { label: "DB load", value: (snapshot?.databaseConnections ?? 0).toLocaleString() };
+  }
+  if (node.type === "queue") {
+    return { label: "Backlog", value: (snapshot?.queueBacklog ?? 0).toLocaleString() };
+  }
+  if (controlsReplicas(node.type)) {
+    return { label: "Utilization", value: `${snapshot?.nodeUtilization[node.id] ?? 0}%` };
+  }
+  return { label: "Traffic", value: `${routedTraffic.toLocaleString()}/s` };
+}
+
 function EventTicker({ game, snapshot }: { game: TycoonState; snapshot?: Snapshot }) {
   return (
     <div className="event-ticker" aria-label="Live park events">
@@ -2383,7 +2458,17 @@ function EventTicker({ game, snapshot }: { game: TycoonState; snapshot?: Snapsho
   );
 }
 
-function AdvisorDialog({ lesson, onContinue }: { lesson: AdvisorLesson; onContinue: () => void }) {
+function AdvisorDialog({
+  lesson,
+  progress,
+  actionLabel,
+  onContinue,
+}: {
+  lesson: AdvisorLesson;
+  progress?: { current: number; total: number };
+  actionLabel: string;
+  onContinue: () => void;
+}) {
   return (
     <div className="game-overlay">
       <section
@@ -2398,6 +2483,7 @@ function AdvisorDialog({ lesson, onContinue }: { lesson: AdvisorLesson; onContin
         </div>
         <div className="advisor-copy">
           <span className="advisor-label">Mina · Systems coach</span>
+          {progress && <span className="advisor-progress">Refresher {progress.current} of {progress.total}</span>}
           <h2 id="advisor-title">{lesson.title}</h2>
           <p>{lesson.message}</p>
           <div className="advisor-detail">
@@ -2405,7 +2491,7 @@ function AdvisorDialog({ lesson, onContinue }: { lesson: AdvisorLesson; onContin
             {lesson.detail}
           </div>
           <button type="button" onClick={onContinue}>
-            Review park while paused
+            {actionLabel}
           </button>
         </div>
       </section>
@@ -2531,17 +2617,6 @@ function OutcomeDialog({
       </section>
     </div>
   );
-}
-
-function shouldTeach(lesson: AdvisorLesson, snapshot: Snapshot) {
-  if (lesson.promptAtSecond !== undefined && snapshot.second >= lesson.promptAtSecond) return true;
-  if (lesson.concept === "queue") return snapshot.queued > 0;
-  if (lesson.concept === "scaling") return snapshot.systemHealth === "saturated";
-  if (lesson.concept === "cache") return snapshot.originLoad > 5_000;
-  if (lesson.concept === "backpressure")
-    return snapshot.retryAttempts > 0 || snapshot.databaseQueue > 0;
-  if (lesson.concept === "regions") return snapshot.networkLatencyMs > 10;
-  return false;
 }
 
 function routePath(source: ArchitectureNode, target: ArchitectureNode) {

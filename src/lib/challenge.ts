@@ -192,6 +192,7 @@ function architectureCostMultiplier(
   if (billableNodes.length === 0) return 1;
   const typeMultiplier: Record<Architecture["nodes"][number]["type"], number> = {
     client: 0,
+    dns: 0.55,
     cdn: 1,
     "load-balancer": 0.8,
     "api-server": 1,
