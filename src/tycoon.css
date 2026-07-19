@@ -1967,10 +1967,10 @@ body:has(.guided-campaign) {
   box-shadow: 0 12px 0 rgba(20, 39, 33, 0.5);
 }
 .advisor-dialog {
-  width: min(680px, 100%);
+  width: min(760px, 100%);
   display: grid;
   grid-template-columns: 150px 1fr;
-  overflow: hidden;
+  overflow-y: auto;
 }
 .advisor-character {
   display: grid;
@@ -1998,25 +1998,60 @@ body:has(.guided-campaign) {
   height: 44px;
 }
 .advisor-copy {
-  padding: 32px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.advisor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 28px 18px;
+  border-bottom: 1px solid #d4d5c3;
+  background: rgba(255, 253, 245, 0.72);
 }
 .advisor-copy .advisor-label {
-  display: block;
-  margin-bottom: 8px;
+  flex: 1 1 auto;
+  margin: 0;
 }
 .advisor-progress {
-  display: inline-flex;
-  margin: 0 0 14px;
-  padding: 4px 8px;
-  border: 1px solid #8eaa8b;
-  border-radius: 999px;
-  background: #e7f0d6;
+  flex: 0 0 auto;
+  display: grid;
+  gap: 5px;
+  min-width: 132px;
+}
+.advisor-progress-label {
   color: #27635a;
   font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-align: right;
   text-transform: uppercase;
+}
+.advisor-progress-track {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.advisor-progress-track i {
+  width: 25px;
+  height: 6px;
+  border: 1px solid #7c9789;
+  border-radius: 999px;
+  background: #fffdf5;
+}
+.advisor-progress-track i.complete {
+  border-color: #27635a;
+  background: #3d806f;
+}
+.advisor-lesson {
+  padding: 28px 28px 30px;
+}
+.advisor-copy h2 {
+  max-width: 16ch;
+  text-wrap: balance;
 }
 .advisor-copy h2,
 .outcome-dialog h2,
@@ -2024,35 +2059,66 @@ body:has(.guided-campaign) {
   margin: 0;
   font-family: var(--park-display);
   font-size: clamp(28px, 4vw, 44px);
-  letter-spacing: -0.055em;
-  line-height: 0.98;
+  letter-spacing: -0.04em;
+  line-height: 1;
 }
-.advisor-copy > p,
+.advisor-lesson > p,
 .outcome-dialog > p {
   color: var(--park-soft);
   font-size: 15px;
   font-weight: 650;
-  line-height: 1.55;
+  line-height: 1.6;
+}
+.advisor-lesson > p {
+  max-width: 66ch;
+  margin: 14px 0 0;
+  text-wrap: pretty;
 }
 .advisor-detail {
-  display: flex;
-  gap: 10px;
-  padding: 13px;
-  border: 1px solid #c7cdb8;
-  border-radius: 10px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 11px;
+  margin-top: 22px;
+  padding: 16px;
+  border: 1px solid #aebba4;
+  border-radius: 12px;
   background: #f2f5dc;
-  font-size: 12px;
-  line-height: 1.45;
+  color: #27635a;
+  font-size: 15px;
+  line-height: 1.55;
 }
 .advisor-detail svg {
-  flex: 0 0 auto;
-  width: 17px;
+  width: 19px;
+  margin-top: 1px;
   color: #34776a;
 }
-.advisor-copy button,
+.advisor-detail strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--park-ink);
+  font-family: var(--park-display);
+  font-size: 13px;
+  font-weight: 850;
+}
+.advisor-detail p {
+  margin: 0;
+  color: #355b52;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.advisor-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+  padding: 18px 28px 22px;
+  border-top: 1px solid #d4d5c3;
+  background: #fff4d0;
+}
+.advisor-actions button,
 .outcome-actions button {
   min-height: 42px;
-  margin-top: 18px;
   padding: 0 15px;
   border: 2px solid var(--park-line);
   border-radius: 10px;
@@ -2060,6 +2126,36 @@ body:has(.guided-campaign) {
   color: white;
   font-weight: 800;
   box-shadow: 0 4px 0 var(--park-line);
+}
+.advisor-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  transition:
+    translate 150ms ease,
+    box-shadow 150ms ease,
+    background-color 150ms ease;
+}
+.advisor-actions button:hover {
+  translate: 0 2px;
+  background: #df5f50;
+  box-shadow: 0 2px 0 var(--park-line);
+}
+.advisor-actions button:active {
+  translate: 0 4px;
+  box-shadow: none;
+}
+.advisor-actions button:focus-visible {
+  outline: 3px solid #fffdf5;
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 5px var(--park-line),
+    0 4px 0 var(--park-line);
+}
+.advisor-actions button svg {
+  width: 17px;
+  height: 17px;
 }
 .journal {
   position: relative;
@@ -2305,10 +2401,21 @@ body:has(.guided-campaign) {
   .advisor-character svg {
     display: none;
   }
-  .advisor-copy,
   .journal,
   .outcome-dialog {
     padding: 24px;
+  }
+  .advisor-header {
+    padding: 17px 20px 15px;
+  }
+  .advisor-lesson {
+    padding: 22px 20px 24px;
+  }
+  .advisor-actions {
+    padding: 16px 20px 20px;
+  }
+  .advisor-actions button {
+    width: 100%;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2326,6 +2433,7 @@ body:has(.guided-campaign) {
   .chapter-number,
   .menu-primary,
   .menu-secondary,
+  .advisor-actions button,
   .building-inspector button,
   .building-inspector input,
   .building-inspector select,

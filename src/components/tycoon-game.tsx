@@ -2474,17 +2474,46 @@ function AdvisorDialog({
           <Users />
         </div>
         <div className="advisor-copy">
-          <span className="advisor-label">Mina · Systems coach</span>
-          {progress && <span className="advisor-progress">Refresher {progress.current} of {progress.total}</span>}
-          <h2 id="advisor-title">{lesson.title}</h2>
-          <p>{lesson.message}</p>
-          <div className="advisor-detail">
-            <BookOpen />
-            {lesson.detail}
+          <header className="advisor-header">
+            <span className="advisor-label">Mina · Systems coach</span>
+            {progress && (
+              <div
+                className="advisor-progress"
+                role="progressbar"
+                aria-label="Refresher progress"
+                aria-valuemin={1}
+                aria-valuemax={progress.total}
+                aria-valuenow={progress.current}
+                aria-valuetext={`Refresher ${progress.current} of ${progress.total}`}
+              >
+                <span className="advisor-progress-label">
+                  Refresher {progress.current} of {progress.total}
+                </span>
+                <span className="advisor-progress-track" aria-hidden="true">
+                  {Array.from({ length: progress.total }, (_, index) => (
+                    <i key={index} className={index < progress.current ? "complete" : undefined} />
+                  ))}
+                </span>
+              </div>
+            )}
+          </header>
+          <div className="advisor-lesson">
+            <h2 id="advisor-title">{lesson.title}</h2>
+            <p>{lesson.message}</p>
+            <aside className="advisor-detail" aria-label="Coach's note">
+              <BookOpen aria-hidden="true" />
+              <div>
+                <strong>Coach's note</strong>
+                <p>{lesson.detail}</p>
+              </div>
+            </aside>
           </div>
-          <button type="button" onClick={onContinue}>
-            {actionLabel}
-          </button>
+          <footer className="advisor-actions">
+            <button type="button" onClick={onContinue}>
+              {actionLabel}
+              <ArrowRight aria-hidden="true" />
+            </button>
+          </footer>
         </div>
       </section>
     </div>

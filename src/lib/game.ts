@@ -156,16 +156,28 @@ export const campaignChapters: CampaignChapter[] = [
     ],
     refresher: [
       refresher(
+        "request-path",
+        "Trace the request before changing the design",
+        "Every request follows a path: it enters through the client, spends time in the API tier, and may continue to durable storage. The end-to-end result is limited by the slowest stage on that path—not necessarily the first component that looks busy.",
+        "Watch throughput, latency, and utilization together. If demand rises while completed requests flatten and latency climbs, work is waiting somewhere. Extra capacity buys headroom but costs money, so locate the constraint before spending. In production, tracing and per-service metrics reveal that waiting; here, inspect each building's load.",
+      ),
+      refresher(
+        "capacity",
+        "Capacity is a budget, not a feeling",
+        "A component can complete only a finite amount of work each second. Below that limit, requests flow normally. Above it, unfinished work accumulates in a queue, so response time can grow dramatically even when demand increases only slightly.",
+        "Estimate whether each tier can sustain peak requests per second, not just average traffic. Spare capacity is safety margin for bursts and failures. Real systems also hit limits from CPU, memory, connection pools, and downstream quotas, so replica count alone never tells the whole capacity story.",
+      ),
+      refresher(
         "api-server",
-        "Start with the request path",
-        "Clients send requests to API servers. Each server has a finite amount of work it can complete every second.",
-        "When traffic exceeds that capacity, requests wait. Add API replicas to increase the work your park can handle in parallel.",
+        "Scale stateless work in parallel",
+        "API servers are usually designed to be stateless so several replicas can process independent requests at the same time. More replicas raise aggregate capacity and reduce the chance that one busy process becomes the bottleneck.",
+        "Scaling out helps only when traffic can reach every replica and the downstream tiers can absorb the extra work. In production, sessions and local files can accidentally make an API stateful; those must move to shared storage or requests may behave differently depending on which replica receives them.",
       ),
       refresher(
         "primary-database",
-        "Protect the data tier",
-        "API requests eventually need durable data. Your database is another capacity limit in the path.",
-        "Upgrade the primary database's capacity. A writable primary scales differently from stateless API servers.",
+        "Expect the bottleneck to move",
+        "Removing one constraint sends more completed work to the next component. A stronger API tier can therefore expose database capacity as the new limit. This is normal: scaling a system is the repeated process of finding and relieving its current bottleneck.",
+        "Compare database load with end-to-end throughput after changing the API tier. A writable primary does not scale like stateless compute because writes require coordination and durable ordering. Production options include better indexes, larger instances, read replicas, caching, or partitioning—each with different consistency and operational costs.",
       ),
     ],
     lessons: [
@@ -233,15 +245,27 @@ export const campaignChapters: CampaignChapter[] = [
     refresher: [
       refresher(
         "load-balancer",
-        "Give traffic a dispatcher",
-        "A load balancer receives client traffic and distributes it across API servers instead of sending everything to one machine.",
-        "Build it in the request path: clients to load balancer, then load balancer to the API tier.",
+        "One endpoint can represent a fleet",
+        "Clients need a stable destination even when the application runs on many changing machines. A load balancer provides that entry point and chooses a healthy API replica for each request, separating the public interface from the fleet behind it.",
+        "Distribution does not create capacity by itself; it makes existing replicas usable as one tier. In production, a balancer also performs health checks, removes unhealthy instances, and may terminate TLS. It can become critical infrastructure, so managed or redundant balancers are preferable to a single unprotected process.",
       ),
       refresher(
         "api-server",
-        "Scale out, not up",
-        "Horizontal scaling means adding multiple API replicas that can handle requests in parallel.",
-        "The balancer makes those replicas useful by sharing the spike between them.",
+        "Horizontal scaling raises the ceiling",
+        "Horizontal scaling adds API replicas; vertical scaling gives one machine more resources. Replicas let independent requests run concurrently and provide redundancy when an instance fails, making them a common fit for stateless request handling.",
+        "Look for aggregate capacity that exceeds the spike with room for uneven traffic and failures. Real scaling is rarely perfectly linear: shared databases, lock contention, connection pools, and coordination overhead eventually dominate. More application servers can even make the system worse if they overwhelm a dependency faster.",
+      ),
+      refresher(
+        "distribution",
+        "Balance traffic, not just machines",
+        "A useful distribution policy prevents one replica from saturating while others sit idle. Round robin is simple; least-connections or latency-aware policies can perform better when requests have different costs. Health checks ensure traffic goes only to replicas able to serve it.",
+        "Use per-replica utilization and error signals to distinguish insufficient total capacity from poor distribution. Production traffic may still become uneven because of sticky sessions, long-lived connections, slow instances, or hot tenants. A balanced request count does not guarantee balanced work.",
+      ),
+      refresher(
+        "failure-domains",
+        "Design for a missing replica",
+        "Peak capacity is not the only target. A resilient tier should continue serving useful traffic when one replica disappears. If every machine is required to survive normal load, a single failure immediately turns into overload and rising latency.",
+        "Treat redundancy as reserved failure capacity and judge the system under degraded conditions, not only its best case. That idle headroom raises steady-state cost in exchange for availability. In production, replicas on the same host or availability zone can fail together, so resilient capacity must span independent failure domains.",
       ),
     ],
     lessons: [
@@ -323,21 +347,27 @@ export const campaignChapters: CampaignChapter[] = [
     refresher: [
       refresher(
         "cdn",
-        "Serve the edge first",
-        "A CDN handles repeatable content close to visitors, reducing work before it reaches your application.",
-        "It is a first line of defense when a popular link draws a crowd.",
+        "Stop repeat work at the edge",
+        "A CDN caches suitable responses near users, before requests cross the network to your application. When many people request the same object, an edge hit saves regional bandwidth, API work, and origin reads while also reducing user-visible latency.",
+        "Watch the hit rate alongside origin throughput: high incoming demand is safe only if most requests end at the edge. In production, cacheability depends on HTTP headers, identity, and data sensitivity. Personalized or rapidly changing responses may need to bypass the CDN entirely.",
       ),
       refresher(
         "cache",
-        "Keep hot data nearby",
-        "A cache stores frequently requested data in fast memory so the API does not ask the database the same question thousands of times.",
-        "Connect API traffic through the cache before it reaches the primary database.",
+        "Cache expensive reads near the application",
+        "An application cache keeps frequently requested data in fast memory so repeated reads avoid durable storage. This is especially powerful for a hot key: one popular record can otherwise consume a disproportionate share of database capacity.",
+        "A cache is useful when the saved computation or read is worth the memory and freshness cost. Production designs must choose a pattern such as cache-aside or read-through and define how entries are invalidated. Cached data is a copy, so correctness cannot depend on it being perfectly current.",
       ),
       refresher(
-        "primary-database",
-        "Plan for cache misses",
-        "A cache cannot answer every request, and it can fail. Misses still need a safe route to durable storage.",
-        "Keep enough API and database capacity for the traffic that falls through the cache.",
+        "ttl",
+        "Freshness and protection pull in opposite directions",
+        "A time-to-live controls how long cached data may be reused. Longer lifetimes improve hit rate and shield the origin, but increase the chance of serving stale results. Shorter lifetimes improve freshness while sending more misses downstream.",
+        "Choose TTLs from the product's tolerance for stale data, not from performance alone. In production, adding random jitter prevents many keys from expiring at the same instant. Request coalescing can also ensure that one miss refreshes a hot entry while other callers wait for the same result.",
+      ),
+      refresher(
+        "cache-failure",
+        "A cache miss is an origin request",
+        "Caches are an optimization, not the source of truth. Cold starts, expiry, eviction, or failure can abruptly turn cache hits into database reads. A design that survives only at its usual hit rate has hidden fragility.",
+        "Observe whether the API and database retain enough headroom when the cache is interrupted. Production systems limit miss concurrency, warm critical keys, and use circuit breakers to contain a cache stampede. Serving stale data can protect the origin, but trades freshness for availability; reserving origin headroom improves recovery while increasing cost.",
       ),
     ],
     lessons: [
@@ -427,21 +457,27 @@ export const campaignChapters: CampaignChapter[] = [
     refresher: [
       refresher(
         "queue",
-        "Separate arrival from processing",
-        "A queue buffers work when a downstream dependency slows down, instead of letting requests pile directly onto it.",
-        "Route API work into the queue before it reaches a struggling database.",
-      ),
-      refresher(
-        "worker",
-        "Drain work at a safe pace",
-        "Workers consume queued work outside the request path and write it to the database at a controlled rate.",
-        "Connect the queue to workers, then workers to durable storage.",
+        "Separate accepting work from finishing it",
+        "Synchronous request paths force callers to wait for every dependency. A queue lets the API acknowledge suitable work after it has been durably accepted, while processing continues independently. Short bursts no longer have to match the database's exact processing rate.",
+        "This works only for operations the product can complete asynchronously. The trade-off is eventual consistency: users may see a pending state before the result exists. In production, queue durability, retention, and message ordering must match the guarantees the workflow actually needs.",
       ),
       refresher(
         "backpressure",
-        "Do not amplify failure",
-        "When a dependency is slow, retries can create more work than the dependency can recover from.",
-        "Queues and workers apply backpressure: they keep work bounded while the slow tier catches up.",
+        "A backlog is a signal and a safety valve",
+        "When arrivals temporarily exceed processing capacity, the queue absorbs the difference as backlog. That protects the slow dependency, but it does not eliminate work. If arrivals remain higher than completions, the backlog and time-to-process will grow without bound.",
+        "In this simulation, watch backlog and database load: a rising backlog means intake still exceeds processing. Production systems also track oldest-message age, enqueue rate, and completion rate. They need explicit limits and an overload policy—reject low-priority work, shed load, or reduce intake before delayed work loses its value.",
+      ),
+      refresher(
+        "worker",
+        "Control the drain rate with workers",
+        "Workers pull jobs from the queue and process them at a rate the downstream system can sustain. Adding workers drains backlog faster until another resource—often database connections or write throughput—becomes the constraint.",
+        "Here, compare backlog with worker utilization and database load: more consumers help only while storage has headroom. Production systems also use backlog age to drive scaling. Delivery is commonly at least once, so a worker may receive the same message after a timeout or crash; handlers must be idempotent so repetition cannot duplicate the business effect.",
+      ),
+      refresher(
+        "retries",
+        "Retries spend capacity during failure",
+        "A retry is new work created when the system is already struggling. Immediate or unbounded retries can multiply demand, keep a dependency saturated, and prevent recovery. This positive feedback loop turns a local slowdown into a cascading failure.",
+        "Retry only transient failures, use strict attempt limits, exponential backoff, and jitter, and respect an overall deadline. In production, pair retries with idempotency and a dead-letter path for work that repeatedly fails. Sometimes the resilient choice is to fail quickly and preserve capacity for requests that can succeed.",
       ),
     ],
     lessons: [
@@ -519,28 +555,28 @@ export const campaignChapters: CampaignChapter[] = [
     ],
     refresher: [
       refresher(
-        "cache",
-        "Keep repeated reads off the origin",
-        "Use the cache to protect primary storage from hot data, but expect misses and temporary cache failures.",
-        "Your architecture still needs enough origin capacity to recover when requests fall through.",
-      ),
-      refresher(
-        "queue",
-        "Buffer slow writes",
-        "Queues keep incoming work from overwhelming a slow dependency. Workers drain that work at a sustainable rate.",
-        "Use both to contain a database slowdown instead of turning it into a retry storm.",
-      ),
-      refresher(
         "regions",
-        "Put capacity near the crowd",
-        "Deploy services across regions to reduce network distance and limit the blast radius of a regional problem.",
-        "Use at least two regions so one slow route does not define the whole launch.",
+        "A region changes latency and blast radius",
+        "Serving users from a nearby region reduces network travel time and creates an independent place to run capacity. Regional isolation can keep one infrastructure problem from taking down the entire service—but only if traffic can move away from the affected region.",
+        "In this simulation, compare p95 latency, availability, and the health and utilization of each regional node; a healthy global result can hide one weak path. Production systems add per-region traffic and latency telemetry. Multiple regions increase deployment, observability, data, and cost complexity, so use them when latency or resilience requirements justify that overhead.",
+      ),
+      refresher(
+        "dns",
+        "Choose a regional entry point first",
+        "Global routing decides which regional endpoint a client should use. DNS can direct users according to geography, latency, health, or policy, while each region's load balancer distributes requests among its local application instances.",
+        "DNS decisions are cached by resolvers and clients, so traffic does not switch instantly when a region fails. Production failover must account for TTLs, stale answers, and clients that keep established connections. DNS is a steering layer, not a precise per-request load balancer.",
       ),
       refresher(
         "weighted-routing",
-        "Steer the traffic",
-        "Weighted routes split traffic across healthy capacity. They let you shift demand rather than treating every destination equally.",
-        "Balance traffic across your regional paths while keeping cost and recovery in view.",
+        "Weights express intent, not guaranteed outcomes",
+        "Weighted routes describe how traffic should be divided between regional paths. They support gradual launches, cost-aware distribution, and draining traffic from an unhealthy location without changing the public endpoint.",
+        "A weight is only a target: DNS caching, connection reuse, and uneven request cost can make observed load differ from the configured split. Shift traffic gradually while watching errors, p95 latency, saturation, and remaining headroom. A failover destination must have enough spare capacity to receive the redirected load.",
+      ),
+      refresher(
+        "global-data",
+        "Compute is easier to distribute than truth",
+        "Application servers can run independently in many regions, but durable data must still answer questions about ownership, replication, and consistency. A single primary simplifies writes but adds distance and dependency; multi-region writes improve locality while introducing conflict and coordination problems.",
+        "The simulation simplifies this data plane, so treat regional compute placement as only part of the production design. Real systems choose consistency per workflow, plan replication lag and failover, and test recovery regularly. Global architecture is a trade-off among latency, availability, correctness, complexity, and cost—not a free upgrade.",
       ),
     ],
     lessons: [
