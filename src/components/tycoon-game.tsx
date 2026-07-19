@@ -11,7 +11,6 @@ import {
   Cloud,
   Database,
   Download,
-  Ellipsis,
   Gauge,
   Globe2,
   HardDrive,
@@ -42,13 +41,6 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Link, useNavigate } from "react-router";
-
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 
 import {
   canConnectComponents,
@@ -2152,13 +2144,11 @@ function BuildingInspector({
   const [openSection, setOpenSection] = useState<"configuration" | "traffic" | null>(
     "configuration",
   );
-  const [actionsOpen, setActionsOpen] = useState(false);
   useEffect(() => {
     setDesiredReplicas(activeReplicas);
   }, [activeReplicas, node.id]);
   useEffect(() => {
     setOpenSection("configuration");
-    setActionsOpen(false);
   }, [node.id]);
   const replicaDelta = Math.max(0, desiredReplicas - activeReplicas);
   const replicaUnitCost = node.type === "worker" ? WORKER_REPLICA_DEPLOYMENT_COST : REPLICA_DEPLOYMENT_COST;
@@ -2409,22 +2399,9 @@ function BuildingInspector({
           </div>
         )}
         {node.type !== "client" && (
-          <DropdownMenu open={actionsOpen} onOpenChange={setActionsOpen}>
-            <DropdownMenuTrigger
-              render={<button className="inspector-actions-trigger" type="button" />}
-            >
-              <Ellipsis /> Actions
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="top" className="inspector-actions-menu">
-              <DropdownMenuItem
-                className="inspector-menu-item"
-                variant="destructive"
-                onClick={onRemove}
-              >
-                <Trash2 /> Remove component
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <button className="inspector-delete" type="button" onClick={onRemove}>
+            <Trash2 /> Delete component
+          </button>
         )}
       </footer>
     </aside>

@@ -1104,7 +1104,7 @@ body:has(.guided-campaign) {
 }
 .build-dock {
   left: 20px;
-  bottom: 54px;
+  bottom: 132px;
   width: 170px;
   max-height: 430px;
   overflow-y: auto;
@@ -1788,7 +1788,7 @@ body:has(.guided-campaign) {
   font-family: var(--mono);
   font-size: 9px;
 }
-.inspector-actions-trigger {
+.inspector-delete {
   width: 100%;
   min-height: 36px;
   display: flex;
@@ -1796,10 +1796,10 @@ body:has(.guided-campaign) {
   justify-content: center;
   gap: 7px;
   padding: 0 10px;
-  border: 1px solid transparent;
+  border: 1px solid #e4b9ae;
   border-radius: 7px;
-  background: transparent;
-  color: #51675f;
+  background: #fff7f3;
+  color: #9f3f36;
   font-size: 10px;
   font-weight: 800;
   cursor: pointer;
@@ -1808,16 +1808,17 @@ body:has(.guided-campaign) {
     border-color 150ms ease,
     color 150ms ease;
 }
-.inspector-actions-trigger:hover,
-.inspector-actions-trigger[data-popup-open] {
-  border-color: #c8d2ca;
-  background: #f0f6e8;
-  color: var(--park-ink);
+.inspector-delete:hover {
+  border-color: #cf8073;
+  background: #fff1e9;
+  color: #7f2e28;
 }
-.inspector-actions-trigger svg {
+.inspector-delete:active {
+  translate: 0 1px;
+}
+.inspector-delete svg {
   width: 16px;
 }
-.inspector-actions-menu,
 .inspector-destination-menu {
   width: 220px;
   border: 2px solid var(--park-line);
@@ -1862,12 +1863,7 @@ body:has(.guided-campaign) {
   margin: 4px 0;
   background: #d6d3c2;
 }
-.inspector-actions-menu [data-variant="destructive"]:focus {
-  background: #fff1e9;
-  color: #9f3f36;
-}
-.inspector-actions-trigger:focus-visible,
-.inspector-actions-menu :focus-visible,
+.inspector-delete:focus-visible,
 .inspector-destination-menu :focus-visible {
   outline: 3px solid #2c6f9e;
   outline-offset: 1px;

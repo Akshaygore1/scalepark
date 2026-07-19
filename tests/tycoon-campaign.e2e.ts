@@ -26,9 +26,28 @@ test("a fresh mission deep link boots as a client-rendered tycoon", async ({ pag
   await expect(page.getByRole("button", { name: "Start park" })).toBeVisible();
 });
 
+test("advisor plans keep exact steps behind one hint", async ({ page }) => {
+  await resetProgress(page);
+  await page.goto("/game/opening-day");
+
+  await expect(page.getByText("Extra API capacity helps absorb sudden traffic.")).toBeVisible();
+  await expect(page.getByText("Run two API replicas")).not.toBeVisible();
+  await expect(page.getByText("Run two database replicas")).not.toBeVisible();
+
+  await page.getByRole("button", { name: "Show hint" }).click();
+
+  await expect(page.getByText("Run two API replicas")).toBeVisible();
+  await expect(page.getByText("Run two database replicas")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Hide hint" })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+});
+
 test("completing a mission carries its park, economy, and reward forward", async ({ page }) => {
   await resetProgress(page);
   await page.goto("/game/opening-day");
+  await page.getByRole("button", { name: "Show hint" }).click();
 
   await page.getByRole("button", { name: "API server, healthy, 1 replicas" }).click();
   await page.getByRole("button", { name: "Increase desired replicas" }).click();
@@ -54,6 +73,10 @@ test("completing a mission carries its park, economy, and reward forward", async
   await page.getByRole("button", { name: "Continue with this park" }).click();
 
   await expect(page.getByRole("heading", { name: "The First Spike" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show hint" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
   await expect(page.getByRole("button", { name: "API server, healthy, 2 replicas" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Primary database, healthy, 2 replicas" }),
