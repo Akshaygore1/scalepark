@@ -747,6 +747,15 @@ export function campaignParkForChapter(
   progress: GameProgress,
   chapter: CampaignChapter,
 ): CampaignParkState {
+  if (progress.completedChapterIds.includes(chapter.id)) {
+    return {
+      architecture: architectureForChapter(chapter),
+      cash: chapter.startingCash,
+      reputation: 100,
+      revenue: 0,
+      operatingCost: 0,
+    };
+  }
   if (progress.campaignPark) {
     const park = structuredClone(progress.campaignPark);
     if (

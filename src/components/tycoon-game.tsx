@@ -117,6 +117,7 @@ type PendingRoute = { edge: ArchitectureEdge; readyAt: number };
 type PendingDisconnection = { edgeId: string; readyAt: number };
 type PendingRemoval = { nodeId: string; readyAt: number };
 type Checkpoint = { architecture: Architecture; game: TycoonState };
+type CampaignSession = "progression" | "replay";
 type GameWorkerEvent =
   | { type: "snapshot"; snapshot: Snapshot }
   | { type: "events"; events: SimulationEvent[] }
@@ -199,6 +200,7 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   const importInput = useRef<HTMLInputElement>(null);
   const recordedResult = useRef<SimulationResult | null>(null);
   const completionHandled = useRef<string | null>(null);
+  const campaignSession = useRef<CampaignSession | null>(null);
 
   const currentChapter = chapterById(game.chapterId);
   const refresher = refresherStep === null ? null : currentChapter.refresher[refresherStep] ?? null;
@@ -372,6 +374,7 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
     if (
       game.phase !== "completed" ||
       game.mode !== "campaign" ||
+      campaignSession.current !== "progression" ||
       completionHandled.current === game.chapterId
     ) {
       return;
@@ -416,7 +419,13 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   ]);
 
   useLayoutEffect(() => {
-    if (game.mode !== "campaign" || !activeLevelId) return;
+    if (
+      game.mode !== "campaign" ||
+      campaignSession.current !== "progression" ||
+      !activeLevelId
+    ) {
+      return;
+    }
     setProgress((current) => {
       const next = {
         ...current,
@@ -477,6 +486,12 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
       setNotice("This chapter's starting runway is unsafe. Please reload after it is repaired.");
       return;
     }
+    campaignSession.current =
+      mode === "campaign"
+        ? progress.completedChapterIds.includes(chapter.id)
+          ? "replay"
+          : "progression"
+        : null;
     const nextArchitecture =
       mode === "sandbox" ? initialArchitecture(progress) : carriedPark!.architecture;
     const nextGame = {
