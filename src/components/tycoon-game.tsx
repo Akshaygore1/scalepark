@@ -97,12 +97,28 @@ import { scoreChallenge } from "@/lib/challenge";
 import {
   explainFailure,
   runSimulation,
+  type Scenario,
   type SimulationCommand,
   type SimulationEvent,
   type SimulationResult,
   type ScenarioIncident,
   type Snapshot,
 } from "@/lib/simulation";
+import {
+  applyWhatIfVariant,
+  compareArchitectures,
+  componentLabel,
+  createWhatIfVariant,
+  formatReviewMetric,
+  reviewCausalSummary,
+  reviewMarkers,
+  reviewMetricLabel,
+  reviewMetricValue,
+  whatIfVariantErrors,
+  type ComparisonResult,
+  type ReviewMetric,
+  type WhatIfVariant,
+} from "@/lib/review";
 
 type PendingBuild = { node: ArchitectureNode; readyAt: number };
 type PendingRoute = { edge: ArchitectureEdge; readyAt: number };
@@ -185,14 +201,23 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   );
   const [liveSnapshot, setLiveSnapshot] = useState<Snapshot>();
   const [liveResult, setLiveResult] = useState<SimulationResult>();
+  const [runSnapshots, setRunSnapshots] = useState<Snapshot[]>([]);
+  const [runEvents, setRunEvents] = useState<SimulationEvent[]>([]);
+  const [runScenario, setRunScenario] = useState<Scenario>();
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [selectedReviewSecond, setSelectedReviewSecond] = useState(0);
+  const [whatIfOpen, setWhatIfOpen] = useState(false);
+  const [whatIfVariant, setWhatIfVariant] = useState<WhatIfVariant>();
   const [completionReward, setCompletionReward] = useState(0);
   const [hasTrafficStarted, setHasTrafficStarted] = useState(false);
   const worker = useRef<Worker | null>(null);
   const checkpoint = useRef<Checkpoint | null>(null);
+  const runStartArchitecture = useRef<Architecture | null>(null);
   const importInput = useRef<HTMLInputElement>(null);
   const recordedResult = useRef<SimulationResult | null>(null);
   const completionHandled = useRef<string | null>(null);
   const campaignSession = useRef<CampaignSession | null>(null);
+  const reviewResumesTraffic = useRef(false);
 
   const currentChapter = chapterById(game.chapterId);
   const refresher = refresherStep === null ? null : currentChapter.refresher[refresherStep] ?? null;
@@ -230,6 +255,32 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   );
   const failure = game.phase === "failed" ? explainFailure(liveResult ?? previewResult) : null;
   const score = liveResult ? scoreChallenge(liveResult, architecture) : null;
+  const reviewResult = useMemo<SimulationResult>(
+    () => ({
+      ...(liveResult ?? previewResult),
+      snapshots: runSnapshots,
+      events: runEvents,
+    }),
+    [liveResult, previewResult, runEvents, runSnapshots],
+  );
+  const whatIfBaseline = runStartArchitecture.current ?? architecture;
+  const whatIfArchitecture = useMemo(
+    () => (whatIfVariant ? applyWhatIfVariant(whatIfBaseline, whatIfVariant) : whatIfBaseline),
+    [architecture, whatIfBaseline, whatIfVariant],
+  );
+  const comparison = useMemo<ComparisonResult | null>(
+    () =>
+      whatIfVariant
+        ? compareArchitectures(
+            whatIfBaseline,
+            whatIfArchitecture,
+            runScenario ?? currentChapter.scenario,
+            CAMPAIGN_SIMULATION_SEED,
+          )
+        : null,
+    [currentChapter.scenario, runScenario, whatIfArchitecture, whatIfBaseline, whatIfVariant],
+  );
+  const reviewAvailable = runSnapshots.length > 0 && game.phase !== "running";
 
   useEffect(() => {
     worker.current = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
@@ -239,6 +290,10 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
       const data = event.data;
       if (data.type === "snapshot") {
         setLiveSnapshot(data.snapshot);
+        setRunSnapshots((current) => {
+          const next = [...current.filter((snapshot) => snapshot.second !== data.snapshot.second), data.snapshot];
+          return next.sort((left, right) => left.second - right.second);
+        });
         setGame((current) => {
           const next = advanceTycoonState(current, data.snapshot);
           const chapter = chapterById(current.chapterId);
@@ -261,6 +316,12 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
           return next;
         });
       } else if (data.type === "events") {
+        setRunEvents((current) => {
+          const seen = new Set(current.map((event) => eventKey(event)));
+          return [...current, ...data.events.filter((event) => !seen.has(eventKey(event)))].sort(
+            (left, right) => left.second - right.second,
+          );
+        });
         setGame((current) => ({
           ...current,
           eventLog: [
@@ -289,6 +350,8 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
         }
       } else if (data.type === "failure" || data.type === "chapter-complete") {
         setLiveResult(data.result);
+        setRunSnapshots(data.result.snapshots);
+        setRunEvents(data.result.events);
         setGame((current) => ({
           ...current,
           phase:
@@ -499,6 +562,17 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
     };
     setArchitecture(nextArchitecture);
     setGame(nextGame);
+    runStartArchitecture.current = structuredClone(nextArchitecture);
+    setRunScenario(structuredClone(chapter.scenario));
+    setWhatIfVariant(createWhatIfVariant(nextArchitecture));
+    setRunSnapshots(
+      runSimulation(nextArchitecture, chapter.scenario, [], CAMPAIGN_SIMULATION_SEED).snapshots.slice(0, 1),
+    );
+    setRunEvents([]);
+    setReviewOpen(false);
+    setWhatIfOpen(false);
+    reviewResumesTraffic.current = false;
+    setSelectedReviewSecond(0);
     checkpoint.current = {
       architecture: structuredClone(nextArchitecture),
       game: structuredClone(nextGame),
@@ -543,6 +617,67 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
     }
     startGame(levelId === sandboxChapter.id ? "sandbox" : "campaign", chapter);
   }, [activeLevelId, levelId, navigate, progress]);
+
+  function openRunReview() {
+    if (game.phase === "running") {
+      reviewResumesTraffic.current = true;
+      worker.current?.postMessage({ type: "pause" });
+      setGame((current) => ({
+        ...current,
+        phase: "paused",
+        eventLog: ["Park paused for run review.", ...current.eventLog].slice(0, 8),
+      }));
+    }
+    setSelectedReviewSecond(Math.max(0, Math.min(game.second, runSnapshots.at(-1)?.second ?? 0)));
+    setWhatIfOpen(false);
+    setReviewOpen(true);
+  }
+
+  function closeRunReview() {
+    setWhatIfOpen(false);
+    setReviewOpen(false);
+    if (reviewResumesTraffic.current && game.phase === "paused" && !liveResult) {
+      worker.current?.postMessage({ type: "resume" });
+      setGame((current) => ({
+        ...current,
+        phase: "running",
+        eventLog: ["Traffic resumed after run review.", ...current.eventLog].slice(0, 8),
+      }));
+    }
+    reviewResumesTraffic.current = false;
+  }
+
+  function openWhatIf() {
+    if (game.phase === "running") {
+      reviewResumesTraffic.current = true;
+      worker.current?.postMessage({ type: "pause" });
+      setGame((current) => ({
+        ...current,
+        phase: "paused",
+        eventLog: ["Park paused for what-if comparison.", ...current.eventLog].slice(0, 8),
+      }));
+    }
+    if (!whatIfVariant) setWhatIfVariant(createWhatIfVariant(whatIfBaseline));
+    setReviewOpen(true);
+    setWhatIfOpen(true);
+  }
+
+  function updateWhatIfSection(
+    section: keyof WhatIfVariant,
+    key: string,
+    value: number | boolean,
+  ) {
+    setWhatIfVariant((current) => {
+      const next = current ?? createWhatIfVariant(whatIfBaseline);
+      return {
+        ...next,
+        [section]: {
+          ...next[section],
+          [key]: value,
+        },
+      } as WhatIfVariant;
+    });
+  }
 
   function togglePlay() {
     if (game.phase !== "running") setHasTrafficStarted(true);
@@ -900,15 +1035,23 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
   }
 
   function injectIncident(type: ScenarioIncident["type"]) {
+    const incident = {
+      type,
+      durationSeconds: 6,
+      ...(type === "regional-latency" ? { region: "us-east" as const } : {}),
+    };
+    setRunScenario((current) => ({
+      ...(current ?? currentChapter.scenario),
+      incidents: [
+        ...(current?.incidents ?? currentChapter.scenario.incidents ?? []),
+        { ...incident, atSecond: game.second + 1 },
+      ],
+    }));
     postCommands([
       {
         atSecond: game.second + 1,
         type: "incident",
-        incident: {
-          type,
-          durationSeconds: 6,
-          ...(type === "regional-latency" ? { region: "us-east" as const } : {}),
-        },
+        incident,
         deploymentDelaySeconds: 0,
       },
     ]);
@@ -922,6 +1065,18 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
     const restoredArchitecture = structuredClone(restored.architecture);
     setArchitecture(restoredArchitecture);
     setGame(restoredGame);
+    runStartArchitecture.current = structuredClone(restoredArchitecture);
+    setRunScenario(structuredClone(currentChapter.scenario));
+    setWhatIfVariant(createWhatIfVariant(restoredArchitecture));
+    setRunSnapshots(
+      runSimulation(restoredArchitecture, currentChapter.scenario, [], CAMPAIGN_SIMULATION_SEED)
+        .snapshots.slice(0, 1),
+    );
+    setRunEvents([]);
+    setReviewOpen(false);
+    setWhatIfOpen(false);
+    reviewResumesTraffic.current = false;
+    setSelectedReviewSecond(0);
     setPendingBuilds([]);
     setPendingRoutes([]);
     setPendingDisconnections([]);
@@ -977,14 +1132,22 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
 
   function syncPlanningArchitecture(nextArchitecture: Architecture, nextNotice: string) {
     setArchitecture(nextArchitecture);
+    runStartArchitecture.current = structuredClone(nextArchitecture);
+    setWhatIfVariant(createWhatIfVariant(nextArchitecture));
+    setRunSnapshots(
+      runSimulation(nextArchitecture, runScenario ?? currentChapter.scenario, [], CAMPAIGN_SIMULATION_SEED)
+        .snapshots.slice(0, 1),
+    );
+    setRunEvents([]);
+    setSelectedReviewSecond(0);
     setLiveSnapshot(
-      runSimulation(nextArchitecture, currentChapter.scenario, [], CAMPAIGN_SIMULATION_SEED)
+      runSimulation(nextArchitecture, runScenario ?? currentChapter.scenario, [], CAMPAIGN_SIMULATION_SEED)
         .snapshots[0],
     );
     worker.current?.postMessage({
       type: "start",
       architecture: nextArchitecture,
-      scenario: currentChapter.scenario,
+      scenario: runScenario ?? currentChapter.scenario,
       commands: [],
       seed: CAMPAIGN_SIMULATION_SEED,
     });
@@ -1009,6 +1172,17 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
     try {
       const next = importArchitecture(await file.text());
       setArchitecture(next);
+      runStartArchitecture.current = structuredClone(next);
+      setRunScenario(structuredClone(currentChapter.scenario));
+      setWhatIfVariant(createWhatIfVariant(next));
+      setRunSnapshots(
+        runSimulation(next, currentChapter.scenario, [], CAMPAIGN_SIMULATION_SEED).snapshots.slice(0, 1),
+      );
+      setRunEvents([]);
+      setReviewOpen(false);
+      setWhatIfOpen(false);
+      reviewResumesTraffic.current = false;
+      setSelectedReviewSecond(0);
       setSelectedId(next.nodes[0]?.id ?? "");
       setPendingBuilds([]);
       setPendingRoutes([]);
@@ -1045,6 +1219,8 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
         game={game}
         snapshot={snapshot}
         onExit={() => navigate("/")}
+        onReview={openRunReview}
+        reviewAvailable={reviewAvailable}
         onJournal={() => setJournalOpen(true)}
         onExport={downloadArchitecture}
         onImport={() => importInput.current?.click()}
@@ -1213,6 +1389,21 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
 
       {journalOpen && <Journal progress={progress} onClose={() => setJournalOpen(false)} />}
 
+      {reviewOpen && (
+        <RunReview
+          result={reviewResult}
+          architecture={whatIfBaseline}
+          selectedSecond={selectedReviewSecond}
+          whatIfOpen={whatIfOpen}
+          variant={whatIfVariant ?? createWhatIfVariant(whatIfBaseline)}
+          comparison={comparison}
+          onClose={closeRunReview}
+          onSelectSecond={setSelectedReviewSecond}
+          onWhatIf={openWhatIf}
+          onVariantChange={updateWhatIfSection}
+        />
+      )}
+
       {(game.phase === "failed" || game.phase === "completed") && (
         <OutcomeDialog
           completed={game.phase === "completed"}
@@ -1220,6 +1411,7 @@ export function TycoonGame({ levelId }: { levelId?: string }) {
           game={game}
           snapshot={snapshot}
           score={score}
+          onReview={openRunReview}
           onMenu={() => navigate("/")}
           onContinue={
             game.phase === "completed"
@@ -1348,6 +1540,8 @@ function GameHud({
   game,
   snapshot,
   onExit,
+  onReview,
+  reviewAvailable,
   onJournal,
   onExport,
   onImport,
@@ -1360,6 +1554,8 @@ function GameHud({
   game: TycoonState;
   snapshot?: Snapshot;
   onExit: () => void;
+  onReview: () => void;
+  reviewAvailable: boolean;
   onJournal: () => void;
   onExport: () => void;
   onImport: () => void;
@@ -1428,6 +1624,16 @@ function GameHud({
           </button>
         ))}
       </div>
+      <button
+        className="journal-button"
+        type="button"
+        disabled={!reviewAvailable}
+        onClick={onReview}
+        aria-label="Open run review"
+        title={reviewAvailable ? "Open run review" : "Run review becomes available while paused"}
+      >
+        <Activity />
+      </button>
       <button
         className="journal-button"
         type="button"
@@ -2557,6 +2763,7 @@ function OutcomeDialog({
   game,
   snapshot,
   score,
+  onReview,
   onMenu,
   onContinue,
   onRetry,
@@ -2567,6 +2774,7 @@ function OutcomeDialog({
   game: TycoonState;
   snapshot?: Snapshot;
   score: ReturnType<typeof scoreChallenge> | null;
+  onReview: () => void;
   onMenu: () => void;
   onContinue?: () => void;
   onRetry: () => void;
@@ -2622,6 +2830,9 @@ function OutcomeDialog({
           </div>
         )}
         <div className="outcome-actions">
+          <button type="button" onClick={onReview}>
+            <Activity /> Run review
+          </button>
           {completed && onContinue ? (
             <button type="button" onClick={onContinue}>
               Continue with this park <ArrowRight />
@@ -2638,6 +2849,340 @@ function OutcomeDialog({
       </section>
     </div>
   );
+}
+
+function RunReview({
+  result,
+  architecture,
+  selectedSecond,
+  whatIfOpen,
+  variant,
+  comparison,
+  onClose,
+  onSelectSecond,
+  onWhatIf,
+  onVariantChange,
+}: {
+  result: SimulationResult;
+  architecture: Architecture;
+  selectedSecond: number;
+  whatIfOpen: boolean;
+  variant: WhatIfVariant;
+  comparison: ComparisonResult | null;
+  onClose: () => void;
+  onSelectSecond: (second: number) => void;
+  onWhatIf: () => void;
+  onVariantChange: (section: keyof WhatIfVariant, key: string, value: number | boolean) => void;
+}) {
+  const [selectedMetric, setSelectedMetric] = useState<ReviewMetric>("throughput");
+  const snapshots = result.snapshots;
+  const lastSecond = snapshots.at(-1)?.second ?? 0;
+  const second = Math.max(0, Math.min(selectedSecond, lastSecond));
+  const snapshot = snapshots.find((item) => item.second === second) ?? snapshots.at(-1);
+  const markers = reviewMarkers(result.events);
+  const causal = reviewCausalSummary(result, architecture, snapshot?.second ?? second);
+  const metricOptions: ReviewMetric[] = [
+    "throughput",
+    "p95LatencyMs",
+    "availability",
+    "queueBacklog",
+    "utilization",
+    "cost",
+  ];
+
+  return (
+    <div className="game-overlay review-overlay">
+      <section className={`run-review ${whatIfOpen ? "what-if-visible" : ""}`} role="dialog" aria-modal="true" aria-labelledby="run-review-title">
+        <header className="run-review-header">
+          <div>
+            <span className="review-kicker">Learning replay · in memory only</span>
+            <h2 id="run-review-title">Run Review</h2>
+            <p>Inspect the completed seconds without changing the live park. Traffic is paused while this review is open.</p>
+          </div>
+          <button className="review-close" type="button" onClick={onClose} aria-label="Close run review">
+            <X />
+          </button>
+        </header>
+
+        <div className="review-timeline" aria-label="Simulation timeline">
+          <div className="review-timeline-heading">
+            <strong>Second {snapshot?.second ?? 0}</strong>
+            <span>{formatClock(snapshot?.second ?? 0)} · select a completed second</span>
+          </div>
+          <div className="review-scrubber">
+            <input
+              aria-label="Select historical simulation second"
+              type="range"
+              min="0"
+              max={lastSecond}
+              step="1"
+              value={second}
+              onChange={(event) => onSelectSecond(Number(event.target.value))}
+            />
+            <div className="review-marker-layer" aria-label="Timeline event markers">
+              {markers.map((marker) => (
+                <button
+                  className={`review-marker ${marker.kind}`}
+                  key={marker.id}
+                  type="button"
+                  style={{ left: `${lastSecond ? (marker.second / lastSecond) * 100 : 0}%` }}
+                  aria-label={`${marker.label} at ${formatClock(marker.second)}: ${marker.message}`}
+                  aria-current={marker.second === second ? "true" : undefined}
+                  title={`${marker.label} · ${formatClock(marker.second)}`}
+                  onClick={() => onSelectSecond(marker.second)}
+                >
+                  <i />
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="review-timeline-scale" aria-hidden="true">
+            <span>00:00</span>
+            <span>{formatClock(lastSecond)}</span>
+          </div>
+          <div className="review-marker-legend" aria-label="Timeline marker legend">
+            {(["incident", "deployment", "saturation", "recovery", "slo-breach"] as const).map((kind) => (
+              <span key={kind} className={kind}><i />{kind.replace("-", " ")}</span>
+            ))}
+          </div>
+        </div>
+
+        <div className="review-columns">
+          <div className="review-main-column">
+            <div className="review-metric-tabs" role="tablist" aria-label="Review metrics">
+              {metricOptions.map((metric) => (
+                <button
+                  className={selectedMetric === metric ? "active" : ""}
+                  key={metric}
+                  type="button"
+                  role="tab"
+                  aria-selected={selectedMetric === metric}
+                  onClick={() => setSelectedMetric(metric)}
+                >
+                  {reviewMetricLabel(metric)}
+                </button>
+              ))}
+            </div>
+            <div className="review-chart-grid">
+              {metricOptions.map((metric) => (
+                <MetricSparkline
+                  key={metric}
+                  metric={metric}
+                  result={result}
+                  selected={selectedMetric === metric}
+                  value={snapshot ? reviewMetricValue(snapshot, metric) : 0}
+                  onSelect={() => setSelectedMetric(metric)}
+                />
+              ))}
+            </div>
+            <section className="review-causal-card" aria-labelledby="review-causal-title">
+              <span className="review-card-kicker">At {formatClock(snapshot?.second ?? 0)}</span>
+              <h3 id="review-causal-title">{causal.headline}</h3>
+              <p>{causal.detail}</p>
+              {causal.signals.length > 0 && (
+                <ul>
+                  {causal.signals.map((signal) => <li key={signal}>{signal}</li>)}
+                </ul>
+              )}
+            </section>
+          </div>
+
+          <aside className="review-events-panel" aria-label="Events at selected second">
+            <div className="review-panel-heading">
+              <span className="review-card-kicker">Selected moment</span>
+              <strong>{snapshot?.second ?? 0}s</strong>
+            </div>
+            <div className="review-selected-stats">
+              {metricOptions.map((metric) => (
+                <span key={metric}>
+                  <small>{reviewMetricLabel(metric)}</small>
+                  <b>{snapshot ? formatReviewMetric(reviewMetricValue(snapshot, metric), metric) : "—"}</b>
+                </span>
+              ))}
+            </div>
+            <h3>What changed here?</h3>
+            {result.events.filter((event) => event.second === (snapshot?.second ?? second)).length > 0 ? (
+              <ul className="review-event-list">
+                {result.events
+                  .filter((event) => event.second === (snapshot?.second ?? second))
+                  .map((event, index) => <li key={`${event.type}-${event.nodeId ?? "system"}-${index}`}><b>{event.type.replaceAll("-", " ")}</b><span>{event.message}</span></li>)}
+              </ul>
+            ) : (
+              <p className="review-empty">No discrete event fired this second. Compare the metric slope and queue state above.</p>
+            )}
+            <button className="what-if-launch" type="button" onClick={onWhatIf}>
+              <Activity /> What-if compare
+            </button>
+          </aside>
+        </div>
+
+        {whatIfOpen && (
+          <WhatIfDrawer
+            architecture={architecture}
+            variant={variant}
+            comparison={comparison}
+            onVariantChange={onVariantChange}
+          />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function MetricSparkline({
+  metric,
+  result,
+  selected,
+  value,
+  onSelect,
+}: {
+  metric: ReviewMetric;
+  result: SimulationResult;
+  selected: boolean;
+  value: number;
+  onSelect: () => void;
+}) {
+  const values = result.snapshots.map((snapshot) => reviewMetricValue(snapshot, metric));
+  const min = Math.min(...values, 0);
+  const max = Math.max(...values, 1);
+  const points = values
+    .map((item, index) => {
+      const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * 100;
+      const y = 30 - ((item - min) / Math.max(0.0001, max - min)) * 26;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <button className={`review-chart-card ${selected ? "selected" : ""}`} type="button" onClick={onSelect} aria-pressed={selected}>
+      <span>{reviewMetricLabel(metric)}</span>
+      <b>{formatReviewMetric(value, metric)}</b>
+      <svg viewBox="0 0 100 34" role="img" aria-label={`${reviewMetricLabel(metric)} over time`} preserveAspectRatio="none">
+        <polyline points={points} fill="none" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </button>
+  );
+}
+
+function WhatIfDrawer({
+  architecture,
+  variant,
+  comparison,
+  onVariantChange,
+}: {
+  architecture: Architecture;
+  variant: WhatIfVariant;
+  comparison: ComparisonResult | null;
+  onVariantChange: (section: keyof WhatIfVariant, key: string, value: number | boolean) => void;
+}) {
+  const apiNodes = architecture.nodes.filter((node) => node.type === "api-server");
+  const workerNodes = architecture.nodes.filter((node) => node.type === "worker");
+  const cacheNodes = architecture.nodes.filter((node) => node.type === "cache");
+  const databaseNodes = architecture.nodes.filter((node) => node.type === "primary-database");
+  const dnsEdges = architecture.edges.filter(
+    (edge) => architecture.nodes.find((node) => node.id === edge.source)?.type === "dns",
+  );
+  const errors = [
+    ...whatIfVariantErrors(architecture, variant),
+    ...(comparison?.baseline.validation.errors ?? []).map((error) => `Baseline: ${error}`),
+    ...(comparison?.candidate.validation.errors ?? []).map((error) => `Candidate: ${error}`),
+  ];
+  const rows = comparison
+    ? [
+        ["Outcome", comparison.baselineMetrics.outcome, comparison.candidateMetrics.outcome, ""],
+        ["Availability", `${(comparison.baselineMetrics.availability * 100).toFixed(2)}%`, `${(comparison.candidateMetrics.availability * 100).toFixed(2)}%`, formatDelta(comparison.deltas.availability * 100, "%")],
+        ["p95 latency", `${comparison.baselineMetrics.p95LatencyMs}ms`, `${comparison.candidateMetrics.p95LatencyMs}ms`, formatDelta(comparison.deltas.p95LatencyMs, "ms")],
+        ["Peak throughput", `${comparison.baselineMetrics.throughput.toLocaleString()} req/s`, `${comparison.candidateMetrics.throughput.toLocaleString()} req/s`, formatDelta(comparison.deltas.throughput, " req/s")],
+        ["Maximum backlog", comparison.baselineMetrics.maximumBacklog.toLocaleString(), comparison.candidateMetrics.maximumBacklog.toLocaleString(), formatDelta(comparison.deltas.maximumBacklog, "")],
+        ["Peak cost", `$${comparison.baselineMetrics.cost.toFixed(2)}`, `$${comparison.candidateMetrics.cost.toFixed(2)}`, formatDelta(comparison.deltas.cost, "")],
+        ["First saturated", componentLabel(architecture, comparison.baselineMetrics.firstSaturatedNodeId), componentLabel(architecture, comparison.candidateMetrics.firstSaturatedNodeId), ""],
+      ]
+    : [];
+  return (
+    <aside className="what-if-drawer" aria-label="What-if architecture comparison">
+      <header>
+        <span className="hypothetical-badge">Hypothetical</span>
+        <div>
+          <h3>What-if compare</h3>
+          <p>Clean architecture replay against the same chapter scenario and fixed seed.</p>
+        </div>
+      </header>
+      <p className="what-if-note">This replay does not spend cash, change the active park, or affect campaign progress.</p>
+      <div className="what-if-controls">
+        <WhatIfReplicaGroup label="API replicas" nodes={apiNodes} values={variant.apiReplicas} section="apiReplicas" onChange={onVariantChange} />
+        <WhatIfReplicaGroup label="Worker replicas" nodes={workerNodes} values={variant.workerReplicas} section="workerReplicas" onChange={onVariantChange} />
+        {cacheNodes.map((node) => (
+          <label className="what-if-field" key={node.id}>
+            <span>{node.label} TTL <small>seconds</small></span>
+            <input type="number" min="1" max="3600" value={variant.cacheTtlSeconds[node.id] ?? node.config.ttlSeconds} onChange={(event) => onVariantChange("cacheTtlSeconds", node.id, Number(event.target.value))} />
+          </label>
+        ))}
+        {apiNodes.map((node) => (
+          <label className="what-if-check" key={`${node.id}-retry`}>
+            <span><b>{node.label} retries</b><small>Retrying can amplify downstream pressure.</small></span>
+            <input type="checkbox" checked={variant.retriesEnabled[node.id] ?? node.config.retries > 0} onChange={(event) => onVariantChange("retriesEnabled", node.id, event.target.checked)} />
+          </label>
+        ))}
+        {databaseNodes.map((node) => (
+          <label className="what-if-field" key={node.id}>
+            <span>{node.label} capacity <small>level 1–3</small></span>
+            <select value={variant.databaseCapacityLevel[node.id] ?? databaseCapacityLevelForWhatIf(node)} onChange={(event) => onVariantChange("databaseCapacityLevel", node.id, Number(event.target.value))}>
+              <option value="1">Level 1</option><option value="2">Level 2</option><option value="3">Level 3</option>
+            </select>
+          </label>
+        ))}
+        {dnsEdges.map((edge) => {
+          const target = architecture.nodes.find((node) => node.id === edge.target);
+          return (
+            <label className="what-if-field" key={edge.id}>
+              <span>DNS → {target?.label ?? "destination"} <small>weight %</small></span>
+              <input type="number" min="1" max="100" value={variant.dnsWeights[edge.id] ?? edge.weight} onChange={(event) => onVariantChange("dnsWeights", edge.id, Number(event.target.value))} />
+            </label>
+          );
+        })}
+        {apiNodes.length + workerNodes.length + cacheNodes.length + databaseNodes.length + dnsEdges.length === 0 && <p className="review-empty">This architecture has no bounded what-if controls yet. Topology changes stay out of the clean replay.</p>}
+      </div>
+      <section className="comparison-results" aria-labelledby="comparison-results-title">
+        <div className="comparison-heading"><span className="review-card-kicker">Replay result</span><h3 id="comparison-results-title">Baseline vs candidate</h3></div>
+        {errors.length > 0 && <div className="comparison-errors" role="alert"><b>Architecture validation</b>{[...new Set(errors)].map((error) => <span key={error}>{error}</span>)}</div>}
+        <table>
+          <thead><tr><th>Metric</th><th>Baseline</th><th>Candidate</th><th>Δ</th></tr></thead>
+          <tbody>{rows.map(([label, baseline, candidate, delta]) => <tr key={label}><th scope="row">{label}</th><td>{baseline}</td><td>{candidate}</td><td className={delta.startsWith("+") ? "delta-positive" : delta.startsWith("-") ? "delta-negative" : ""}>{delta || "—"}</td></tr>)}</tbody>
+        </table>
+      </section>
+    </aside>
+  );
+}
+
+function WhatIfReplicaGroup({
+  label,
+  nodes,
+  values,
+  section,
+  onChange,
+}: {
+  label: string;
+  nodes: ArchitectureNode[];
+  values: Record<string, number>;
+  section: "apiReplicas" | "workerReplicas";
+  onChange: (section: keyof WhatIfVariant, key: string, value: number | boolean) => void;
+}) {
+  return nodes.length === 0 ? null : nodes.map((node) => (
+    <label className="what-if-field" key={node.id}>
+      <span>{label} · {node.label} <small>0–12</small></span>
+      <input type="number" min="0" max="12" value={values[node.id] ?? node.config.replicas} onChange={(event) => onChange(section, node.id, Number(event.target.value))} />
+    </label>
+  ));
+}
+
+function formatDelta(value: number, unit: string) {
+  if (Math.abs(value) < 0.005) return "—";
+  return `${value > 0 ? "+" : ""}${value.toFixed(value % 1 === 0 ? 0 : 2)}${unit}`;
+}
+
+function databaseCapacityLevelForWhatIf(node: ArchitectureNode) {
+  if (node.config.capacity >= 30_000) return 3;
+  if (node.config.capacity >= 20_000) return 2;
+  return 1;
 }
 
 function routePath(source: ArchitectureNode, target: ArchitectureNode) {
@@ -2680,4 +3225,8 @@ function formatMoney(value: number) {
 
 function formatClock(second: number) {
   return `${String(Math.floor(second / 60)).padStart(2, "0")}:${String(second % 60).padStart(2, "0")}`;
+}
+
+function eventKey(event: SimulationEvent) {
+  return `${event.second}:${event.type}:${event.nodeId ?? "system"}:${event.message}`;
 }
