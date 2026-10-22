@@ -1,10 +1,10 @@
 import { useEffect } from "react";
 
-import { TycoonGame } from "@/components/tycoon-game";
+import { CampaignMap } from "@/components/campaign-map";
 
 export default function Home() {
   useEffect(() => {
-    document.title = "ScaleLab Park — Guided system design";
+    document.title = "ScaleLab Park · Learn system design";
   }, []);
-  return <TycoonGame />;
+  return <CampaignMap />;
 }

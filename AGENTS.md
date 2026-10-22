@@ -8,13 +8,20 @@
 
 ## Architecture
 
-- This is one client-only Vite/React app, not a monorepo. `src/main.tsx` mounts the manually configured browser router in `src/router.tsx`; route-like filenames under `src/routes/` do not imply file-based routing.
-- `src/components/tycoon-game.tsx` owns gameplay orchestration, UI state, persistence, and the simulation worker lifecycle. Keep deterministic domain logic in `src/lib/`; `src/workers/simulation.worker.ts` is the live simulation message boundary.
-- Campaign definitions, unlock/progression rules, and starting-state validation live together in `src/lib/game.ts`. Architecture schema/import validation is in `src/lib/architecture.ts`; simulation behavior is in `src/lib/simulation.ts`.
-- Use the `@/` alias for `src/` imports. The worker must continue to be constructed with `new URL(..., import.meta.url)` so Vite bundles it correctly.
+- One client-only Vite/React app. `src/main.tsx` mounts the browser router in `src/router.tsx`; route-like filenames under `src/routes/` do not imply file-based routing.
+- Domain logic lives in `src/lib/` and has no React: `model.ts` (buildings, settings, capacities, costs), `topology.ts` (validation and request paths), `simulation.ts` (deterministic per-second engine), `evaluate.ts` (targets, stars, capstone score), `progress.ts` (persistence).
+- Levels live in `src/lib/curriculum/`, one file per module of the sys0.in Part 1 syllabus. A level unlocks buildings and settings (`unlocks.features`); the inspector shows only unlocked settings.
+- `src/components/game/game-screen.tsx` orchestrates a level through the reducer in `game-state.ts`. A run is simulated in full when it starts and then played back; parks can only be edited while no run is playing.
+- Styles are plain CSS in `src/styles/` with the park tokens in `base.css`. No Tailwind.
+- Use the `@/` alias for `src/` imports.
+
+## Level design rules
+
+- The starting park must fail in a way that shows the level's idea; the intended fix must pass; brute force (bigger hardware) must fail the budget or another target. Win conditions are outcome targets, never required routes.
+- After changing the engine or any level numbers, rebalance with a throwaway script (outside the repo, run via `bun`) that checks the start park, the intended fix, and brute-force alternatives for every level.
+- Keep simulation behavior deterministic: no randomness or wall-clock input.
 
 ## Compatibility
 
-- Browser persistence and exported architecture JSON are versioned compatibility boundaries: `GAME_PROGRESS_VERSION`, `ATTEMPT_HISTORY_VERSION`, and `ARCHITECTURE_VERSION`. When changing persisted shapes, update the corresponding runtime restore/import validators and migration behavior, not only TypeScript types.
-- Campaign and scored simulations use fixed seeds. Preserve deterministic behavior when changing simulation logic or chapter scenarios.
+- Saved progress (`PROGRESS_VERSION`) and exported parks (`ARCHITECTURE_VERSION`) are versioned. When changing persisted shapes, update the runtime validators in `progress.ts` and `park-file.ts`, not only the TypeScript types.
 - Development mode dynamically loads `react-grab` from `src/main.tsx`; it must remain excluded from production behavior.

@@ -1,1516 +1,814 @@
 import {
-  databaseCapacityLevel,
-  validateArchitecture,
+  API_CAPACITY,
+  API_CONNECTIONS,
+  CACHE_CAPACITY,
+  DB_CAPACITY,
+  DB_MEMORY_ROWS,
+  WORKER_CAPACITY,
+  nodeCatalog,
+  nodeMonthlyCost,
   type Architecture,
-  type ArchitectureEdge,
-  type ArchitectureNode,
-  type ComponentConfig,
-  type Region,
-} from "./architecture";
-import type { ComponentType } from "./architecture";
+  type NodeType,
+} from "./model";
+import { validatePark, type Topology, type Validation } from "./topology";
+
+export type Keyframes = ReadonlyArray<readonly [second: number, value: number]>;
+
+export type Incident =
+  | { at: number; type: "api-crash"; instances?: number }
+  | { at: number; type: "worker-crash" }
+  | { at: number; type: "primary-failure" }
+  | { at: number; type: "table-drop" }
+  | { at: number; type: "retention-job"; duration: number };
+
+export type ScenarioParams = {
+  /** Seconds between repeat reads of a typical link; drives cache hit rate. */
+  reuseSeconds: number;
+  /** Reads per second an edited link receives while a cache still holds the old target. */
+  staleReadsPerEdit: number;
+  /** Seconds between edits to the viral link; each edit invalidates its cache entry. */
+  hotEditEvery: number;
+  /** Requests per second a real visitor sends in a burst, and the share of traffic that bursts. */
+  burstPerClient: number;
+  burstShare: number;
+  /** Requests per second each bot sends. */
+  botRate: number;
+  /** Malformed jobs per second that fail every attempt. */
+  poisonPerSecond: number;
+  /** Share of redirects for links old enough to be archived, by archive cutoff. */
+  coldReadShare: { "1y": number; "90d": number };
+  /** Share of stored links older than one year and older than 90 days. */
+  oldRowShare: { "1y": number; "90d": number };
+  /** Database work units for one dashboard query. */
+  dashboardCost: number;
+  /** Story hours since the last snapshot when the table is dropped. */
+  backupAgeHours: { daily: number; hourly: number };
+  createsPerStoryHour: number;
+  /** Database work units per second for an unpartitioned retention delete. */
+  retentionUnits: number;
+  /** Share of reads that target recently created links. */
+  recentReadShare: number;
+  /** Share of newly created links opened by their creator right away. */
+  followupShare: number;
+};
 
 export type Scenario = {
-  version: 1;
   durationSeconds: number;
-  normalRps: number;
-  spikeRps: number;
-  spikeAtSecond: number;
-  availabilityTarget: number;
-  p95TargetMs: number;
-  throughputTarget: number;
-  costCeiling: number;
-  observeRecovery?: boolean;
-  incidents?: ScenarioIncident[];
-  successRequirements?: ScenarioSuccessRequirements;
+  /** Shown to players when one simulated second stands for more story time. */
+  timeScale?: string;
+  traffic: {
+    redirects: Keyframes;
+    creates?: Keyframes;
+    edits?: Keyframes;
+    dashboard?: Keyframes;
+    viewers?: Keyframes;
+    bots?: Keyframes;
+    hotKey?: Keyframes;
+  };
+  /** Every successful redirect records a click for analytics. */
+  clicks?: boolean;
+  data: { linkRows: number; linkRowsPerSecond?: number; clickRows?: number };
+  params?: Partial<ScenarioParams>;
+  incidents?: Incident[];
 };
-export type ScenarioSuccessRequirements = {
-  /** Components that must be reachable from clients and doing work to complete the lesson. */
-  activeComponents?: ComponentType[];
-  /** Minimum reachable capacity investments required by the mission. */
-  minimumReplicas?: Partial<Record<ComponentType, number>>;
-  /** Minimum number of separately placed nodes for regional lessons. */
-  minimumComponents?: Partial<Record<ComponentType, number>>;
-  /** The writable primary scales through capacity upgrades, not replicas. */
-  minimumDatabaseLevel?: number;
-  /** Directed component routes that must exist in the live request path. */
-  requiredRoutes?: Array<{ source: ComponentType; target: ComponentType }>;
-  /** Routes that bypass the lesson's intended component must be removed. */
-  forbiddenRoutes?: Array<{ source: ComponentType; target: ComponentType }>;
-  /** Backpressure lessons require retry amplification to be disabled. */
-  requireRetriesDisabled?: boolean;
-  /** Global chapters need a deployment that actually spans regions. */
-  minimumRegions?: number;
-  /** A global route must split traffic instead of merely adding idle regional nodes. */
-  requireWeightedRouting?: boolean;
-  /** Require complete DNS-to-load-balancer-to-API paths in distinct regions. */
-  minimumRegionalPaths?: number;
-};
-export type ScenarioIncident = {
-  atSecond: number;
-  type: "hot-key" | "cache-failure" | "database-slowdown" | "database-failure" | "regional-latency";
-  region?: Region;
-  durationSeconds?: number;
-};
-export type RouteAllocation = {
-  sourceNodeId: string;
-  targetNodeId: string;
-  weight: number;
-  offered: number;
-  latencyMs: number;
-  affected: boolean;
-};
-export type SimulationCommand =
-  | { atSecond: number; type: "traffic"; rps: number }
-  | {
-      atSecond: number;
-      type: "configure";
-      nodeId: string;
-      changes: Partial<Omit<ComponentConfig, "replicas">>;
-      deploymentDelaySeconds: number;
-    }
-  | {
-      atSecond: number;
-      type: "capacity";
-      nodeId: string;
-      replicaDelta: number;
-      deploymentDelaySeconds: number;
-    }
-  | {
-      atSecond: number;
-      type: "add-node";
-      node: ArchitectureNode;
-      deploymentDelaySeconds: number;
-    }
-  | {
-      atSecond: number;
-      type: "remove-node";
-      nodeId: string;
-      deploymentDelaySeconds: number;
-    }
-  | {
-      atSecond: number;
-      type: "connect";
-      edge: ArchitectureEdge;
-      deploymentDelaySeconds: number;
-    }
-  | {
-      atSecond: number;
-      type: "disconnect";
-      edgeId: string;
-      deploymentDelaySeconds: number;
-    }
-  | {
-      atSecond: number;
-      type: "incident";
-      incident: Omit<ScenarioIncident, "atSecond">;
-      deploymentDelaySeconds: number;
-    };
 
-type EngineSimulationCommand = Extract<
-  SimulationCommand,
-  { type: "traffic" | "configure" | "capacity" }
->;
-export type PendingDeployment =
-  | {
-      kind: "capacity";
-      nodeId: string;
-      readyAtSecond: number;
-      replicaDelta: number;
-      source: "autoscaling" | "runtime-edit";
-    }
-  | {
-      kind: "configuration";
-      nodeId: string;
-      readyAtSecond: number;
-      changes: Partial<Omit<ComponentConfig, "replicas">>;
-      source: "runtime-edit";
-    };
-export type SemanticHealth =
-  | "healthy"
-  | "heating"
-  | "saturated"
-  | "queued"
-  | "failed"
-  | "recovered";
+const defaultParams: ScenarioParams = {
+  reuseSeconds: 20,
+  staleReadsPerEdit: 0.5,
+  hotEditEvery: 0,
+  burstPerClient: 8,
+  burstShare: 0.15,
+  botRate: 40,
+  poisonPerSecond: 0,
+  coldReadShare: { "1y": 0.02, "90d": 0.08 },
+  oldRowShare: { "1y": 0.7, "90d": 0.9 },
+  dashboardCost: 3,
+  backupAgeHours: { daily: 14, hourly: 0.6 },
+  createsPerStoryHour: 9_000,
+  retentionUnits: 4_000,
+  recentReadShare: 0.6,
+  followupShare: 1,
+};
+
+export type Health = "idle" | "healthy" | "busy" | "saturated" | "failed";
+
+export type NodeSnapshot = {
+  load: number;
+  capacity: number;
+  utilization: number;
+  health: Health;
+  detail: string;
+};
+
+export type LatencyClass = { label: string; volume: number; latencyMs: number };
+
 export type Snapshot = {
   second: number;
-  offered: number;
+  demand: number;
   successful: number;
-  queued: number;
-  dropped: number;
-  timedOut: number;
-  inFlight: number;
   availability: number;
-  p95LatencyMs: number;
-  throughput: number;
-  cost: number;
-  networkLatencyMs: number;
-  regionalCost: number;
-  routeAllocations: RouteAllocation[];
-  activeReplicas: Record<string, number>;
-  nodeCapacity: Record<string, number>;
-  nodeUtilization: Record<string, number>;
-  pendingDeployments: PendingDeployment[];
+  p95Ms: number;
+  monthlyCost: number;
+  classes: LatencyClass[];
+  nodes: Partial<Record<NodeType, NodeSnapshot>>;
   cacheHitRate: number;
-  cdnHitRate: number;
-  originLoad: number;
-  hotKeyPressure: number;
-  cacheMisses: number;
-  cacheEvictions: number;
-  cacheHealth: "absent" | "healthy" | "hot" | "expired" | "failed";
-  retryAttempts: number;
-  amplifiedLoad: number;
-  databaseConnections: number;
-  databaseQueue: number;
+  staleReads: number;
+  notFound: number;
+  lostWrites: number;
+  lostLinks: number;
+  duplicates: number;
+  loggedOut: number;
+  legitRejected: number;
+  botsPassed: number;
+  viewers: number;
+  viewersConnected: number;
+  freshnessSeconds: number;
+  missedUpdates: number;
   queueBacklog: number;
-  droppedMessages: number;
-  nodeHealth: Record<string, SemanticHealth>;
-  systemHealth: SemanticHealth;
-  saturatedNodeId?: string;
+  analyticsDelaySeconds: number;
+  apiInstances: { running: number; warming: number; crashed: number };
+  replicaLagSeconds: number;
 };
-export type SimulationEvent = {
+
+export type SimEvent = {
   second: number;
-  type:
-    | "traffic"
-    | "saturation"
-    | "slo-breach"
-    | "hot-key"
-    | "cache-stampede"
-    | "retry-amplification"
-    | "database-slowdown"
-    | "database-failure"
-    | "regional-latency"
-    | "scale-out-requested"
-    | "scale-in-requested"
-    | "deployment-applied"
-    | "capacity-removed"
-    | "queue-overflow"
-    | "recovery";
+  kind: "incident" | "saturation" | "recovery" | "scaling" | "info";
+  node?: NodeType;
   message: string;
-  nodeId?: string;
 };
+
+export type Totals = {
+  demand: number;
+  successful: number;
+  availability: number;
+  p95Ms: number;
+  averageMonthlyCost: number;
+  staleReads: number;
+  notFound: number;
+  lostWrites: number;
+  lostLinks: number;
+  duplicates: number;
+  loggedOut: number;
+  legitRejected: number;
+  peakBotsPassed: number;
+  minViewersConnected: number;
+  maxFreshnessSeconds: number;
+  maxMissedUpdates: number;
+  maxAnalyticsDelaySeconds: number;
+  finalBacklog: number;
+  firstSaturated?: { node: NodeType; second: number };
+};
+
 export type SimulationResult = {
-  validation: ReturnType<typeof validateArchitecture>;
+  validation: Validation;
   snapshots: Snapshot[];
-  events: SimulationEvent[];
-  outcome: "passed" | "failed" | "invalid";
-  firstSaturatedNodeId?: string;
-  seed: number;
-  architectureVersion: number;
-  scenarioVersion: number;
+  events: SimEvent[];
+  totals: Totals;
 };
 
-export type FailureReport = {
-  frozenAtSecond: number;
-  firstSaturatedNodeId?: string;
-  queueGrowth: number;
-  propagatedLatencyMs: number;
-  successfulTraffic: number;
-  dropped: number;
-  timedOut: number;
-  cause: string;
-};
+type Stage = { backlog: number; dropFraction: number; utilization: number; waitMs: number };
 
-export const starterScenario: Scenario = {
-  version: 1,
-  durationSeconds: 60,
-  normalRps: 2100,
-  spikeRps: 18_000,
-  spikeAtSecond: 12,
-  availabilityTarget: 0.9995,
-  p95TargetMs: 180,
-  throughputTarget: 17_100,
-  costCeiling: 42,
-  incidents: [
-    { atSecond: 25, type: "hot-key" },
-    { atSecond: 40, type: "cache-failure" },
-  ],
-};
-
-export function runSimulation(
-  architecture: Architecture,
-  scenario = starterScenario,
-  commands: SimulationCommand[] = [],
-  seed = 1,
-): SimulationResult {
-  const engineCommands = commands.filter(isEngineCommand);
-  const validation = validateArchitecture(architecture);
-  if (!validation.runnable)
-    return result(validation, [], [], "invalid", undefined, seed, architecture, scenario);
-  const design = structuredClone(architecture);
-  const reachable = reachableNodeIds(design);
-  const nodes = design.nodes.filter((node) => node.type !== "client" && reachable.has(node.id));
-  const cdn = nodes.find((node) => node.type === "cdn");
-  const cache = nodes.find((node) => node.type === "cache");
-  const database = nodes.find((node) => node.type === "primary-database") ?? nodes[0]!;
-  const queueNode = nodes.find((node) => node.type === "queue");
-  const queueTrafficShare =
-    queueNode &&
-    design.edges.some((edge) => edge.target === queueNode.id && edge.purpose === "async-job")
-      ? 0.25
-      : 0;
-  const cdnTrafficShare = cdn ? trafficShareReachingNode(design, cdn.id) : 0;
-  const queueDescendants = queueNode ? descendantNodeIds(design, queueNode.id) : new Set();
-  const workerNodes = nodes.filter(
-    (node) => node.type === "worker" && queueDescendants.has(node.id),
-  );
-  const workerTrafficShares = new Map(
-    workerNodes.map((node) => [
-      node.id,
-      queueNode ? trafficShareBetweenNodes(design, queueNode.id, node.id) : 0,
-    ]),
-  );
-  const transportNodes = nodes.filter(
-    (node) => !["cache", "primary-database", "read-replica", "queue", "worker"].includes(node.type),
-  );
-  const resilienceNodes = [...transportNodes, ...(queueTrafficShare > 0 ? workerNodes : [])];
-  const events: SimulationEvent[] = [];
-  const snapshots: Snapshot[] = [];
-  const activeReplicas = Object.fromEntries(
-    nodes.map((node) => [
-      node.id,
-      node.config.autoscaling.enabled
-        ? Math.min(
-            node.config.autoscaling.maxReplicas,
-            Math.max(node.config.autoscaling.minReplicas, node.config.replicas),
-          )
-        : node.config.replicas,
-    ]),
-  );
-  const lastScalingAction = Object.fromEntries(nodes.map((node) => [node.id, -Infinity]));
-  let pendingDeployments: PendingDeployment[] = [];
-  let requestBacklog = 0;
-  let messageBacklog = 0;
-  let firstSaturatedNodeId: string | undefined;
-  let retriesWereActive = false;
-  let objectiveBreached = false;
-  for (let second = 0; second < scenario.durationSeconds; second += 1) {
-    let removedCapacity: { nodeId: string; activeReplicas: number } | undefined;
-    const readyDeployments = pendingDeployments.filter(
-      (deployment) => deployment.readyAtSecond === second,
-    );
-    pendingDeployments = pendingDeployments.filter(
-      (deployment) => deployment.readyAtSecond !== second,
-    );
-    for (const deployment of readyDeployments) {
-      const node = nodes.find((candidate) => candidate.id === deployment.nodeId);
-      if (!node) continue;
-      if (deployment.kind === "configuration") {
-        node.config = { ...node.config, ...deployment.changes };
-      } else {
-        const previousReplicas = activeReplicas[node.id] ?? node.config.replicas;
-        activeReplicas[node.id] = Math.max(0, previousReplicas + deployment.replicaDelta);
-        if (deployment.replicaDelta < 0) {
-          removedCapacity = {
-            nodeId: node.id,
-            activeReplicas: activeReplicas[node.id]!,
-          };
-        }
-      }
-      events.push({
-        second,
-        type:
-          deployment.kind === "capacity" && deployment.replicaDelta < 0
-            ? "capacity-removed"
-            : "deployment-applied",
-        nodeId: node.id,
-        message:
-          deployment.kind === "capacity" && deployment.replicaDelta < 0
-            ? `${node.label} removes ${Math.abs(deployment.replicaDelta)} active replica; queued and in-flight work may be affected.`
-            : `${node.label} deployment becomes active.`,
-      });
-    }
-    for (const command of engineCommands.filter((item) => item.atSecond === second)) {
-      if (command.type === "traffic") continue;
-      pendingDeployments.push(
-        command.type === "capacity"
-          ? {
-              kind: "capacity",
-              nodeId: command.nodeId,
-              readyAtSecond: second + Math.max(1, command.deploymentDelaySeconds),
-              replicaDelta: command.replicaDelta,
-              source: "runtime-edit",
-            }
-          : {
-              kind: "configuration",
-              nodeId: command.nodeId,
-              readyAtSecond: second + Math.max(1, command.deploymentDelaySeconds),
-              changes: command.changes,
-              source: "runtime-edit",
-            },
-      );
-    }
-    const trafficCommand = engineCommands
-      .filter(
-        (item): item is Extract<SimulationCommand, { type: "traffic" }> =>
-          item.atSecond <= second && item.type === "traffic",
-      )
-      .at(-1);
-    const offered =
-      (trafficCommand?.rps ??
-        (second >= scenario.spikeAtSecond ? scenario.spikeRps : scenario.normalRps)) +
-      (seed % 3);
-    const capacityFor = (
-      node: Architecture["nodes"][number],
-      serviceTimeMs = node.config.serviceTimeMs,
-    ) => effectiveCapacity(node, serviceTimeMs, activeReplicas[node.id] ?? node.config.replicas);
-    const workerCapacity =
-      queueNode && workerNodes.length && queueTrafficShare > 0
-        ? routedCapacityFromNode(design, queueNode.id, activeReplicas)
-        : Number.POSITIVE_INFINITY;
-    const requestTimeoutMs = transportNodes.length
-      ? Math.min(...transportNodes.map((node) => node.config.timeoutMs))
-      : database.config.timeoutMs;
-    const activeIncidents = (scenario.incidents ?? []).filter((incident) =>
-      incidentIsActive(incident, second),
-    );
-    const hotKeyPressure = activeIncidents.some((incident) => incident.type === "hot-key")
-      ? 0.8
-      : 0;
-    const cacheFailed = activeIncidents.some((incident) => incident.type === "cache-failure");
-    const databaseSlowed = activeIncidents.some(
-      (incident) => incident.type === "database-slowdown",
-    );
-    const databaseFailed = activeIncidents.some((incident) => incident.type === "database-failure");
-    const affectedRegions = new Set(
-      activeIncidents
-        .filter((incident) => incident.type === "regional-latency" && incident.region)
-        .map((incident) => incident.region!),
-    );
-    const cacheExpired = Boolean(
-      cache && !cacheFailed && second > 0 && second % Math.max(1, cache.config.ttlSeconds) === 0,
-    );
-    const cacheHitRate =
-      cache && !cacheFailed && !cacheExpired ? calculateCacheHitRate(cache, hotKeyPressure) : 0;
-    const cacheHealth = !cache
-      ? "absent"
-      : cacheFailed
-        ? "failed"
-        : cacheExpired
-          ? "expired"
-          : hotKeyPressure > 0
-            ? "hot"
-            : "healthy";
-    if (incidentStarts(scenario, "hot-key", second))
-      events.push({
-        second,
-        type: "hot-key",
-        nodeId: cache?.id,
-        message: "A viral short link concentrates traffic on one cache key.",
-      });
-    if (incidentStarts(scenario, "cache-failure", second))
-      events.push({
-        second,
-        type: "cache-stampede",
-        nodeId: cache?.id,
-        message: "Cache failure sends concurrent misses to the origin.",
-      });
-    if (incidentStarts(scenario, "database-slowdown", second))
-      events.push({
-        second,
-        type: "database-slowdown",
-        nodeId: database.id,
-        message: `${database.label} service time increases and available connections drain more slowly.`,
-      });
-    if (incidentStarts(scenario, "database-failure", second))
-      events.push({
-        second,
-        type: "database-failure",
-        nodeId: database.id,
-        message: `${database.label} stops accepting work.`,
-      });
-    const regionalIncident = (scenario.incidents ?? []).find(
-      (incident) => incident.type === "regional-latency" && incident.atSecond === second,
-    );
-    if (regionalIncident?.region)
-      events.push({
-        second,
-        type: "regional-latency",
-        nodeId: nodes.find((node) => node.config.region === regionalIncident.region)?.id,
-        message: `${regionalIncident.region} experiences elevated network latency on affected routes.`,
-      });
-    const recoveredIncident = (scenario.incidents ?? []).find(
-      (incident) =>
-        ["database-slowdown", "database-failure", "regional-latency"].includes(incident.type) &&
-        second === incident.atSecond + incidentDuration(incident),
-    );
-    if (recoveredIncident)
-      events.push({
-        second,
-        type: "recovery",
-        nodeId:
-          recoveredIncident.type === "regional-latency"
-            ? nodes.find((node) => node.config.region === recoveredIncident.region)?.id
-            : database.id,
-        message:
-          recoveredIncident.type === "regional-latency"
-            ? `${recoveredIncident.region ?? "Affected region"} network latency recovers to baseline.`
-            : `${database.label} recovers from the ${recoveredIncident.type.replace("database-", "")} incident.`,
-      });
-    if (cacheExpired)
-      events.push({
-        second,
-        type: "cache-stampede",
-        nodeId: cache?.id,
-        message: "TTL expiry invalidates the working set and concurrent misses reach the origin.",
-      });
-    if (second === scenario.spikeAtSecond)
-      events.push({
-        second,
-        type: "traffic",
-        message: `Traffic spike reaches ${offered.toLocaleString()} req/s.`,
-      });
-    const previousRequestBacklog = requestBacklog;
-    const previousMessageBacklog = messageBacklog;
-    const pathNetwork = calculatePathNetwork(design, affectedRegions);
-    const networkLatencyMs = pathNetwork.p95LatencyMs;
-    const networkDropped = affectedRegions.size
-      ? Math.ceil(offered * pathNetwork.affectedShare * 0.02)
-      : 0;
-    const previousSnapshot = snapshots.at(-1);
-    const removedNode = removedCapacity
-      ? nodes.find((node) => node.id === removedCapacity.nodeId)
-      : undefined;
-    const removedRouteShare = removedNode ? trafficShareReachingNode(design, removedNode.id) : 0;
-    const previousRoutedDemand = (previousSnapshot?.offered ?? 0) * removedRouteShare;
-    const remainingNodeCapacity = removedNode
-      ? effectiveCapacity(
-          removedNode,
-          removedNode.config.serviceTimeMs,
-          removedCapacity!.activeReplicas,
-        )
-      : 0;
-    const removalShortfallShare =
-      previousRoutedDemand === 0
-        ? 0
-        : Math.max(
-            0,
-            Math.min(1, (previousRoutedDemand - remainingNodeCapacity) / previousRoutedDemand),
-          );
-    const removalDropped = Math.min(
-      offered - networkDropped,
-      Math.ceil((previousSnapshot?.inFlight ?? 0) * removedRouteShare * removalShortfallShare),
-    );
-    if (removedCapacity) {
-      const removalEvent = [...events]
-        .reverse()
-        .find((event) => event.second === second && event.type === "capacity-removed");
-      if (removalEvent) {
-        removalEvent.message = `${removedNode?.label ?? "Component"} removes active capacity; ${removalDropped.toLocaleString()} routed in-flight requests fail from the resulting shortfall.`;
-      }
-    }
-    const routableOffered = Math.max(0, offered - networkDropped - removalDropped);
-    const cdnHitRate = cdn ? Math.min(0.7, 0.25 + cdn.config.ttlSeconds / 1_000) : 0;
-    const cdnHits = Math.floor(routableOffered * cdnTrafficShare * cdnHitRate);
-    const originOffered = Math.max(0, routableOffered - cdnHits);
-    const freshMessages = Math.round(originOffered * queueTrafficShare);
-    const freshRequests = originOffered - freshMessages;
-    const messageDemand = freshMessages + previousMessageBacklog;
-    const requestDemand = freshRequests + previousRequestBacklog;
-    const workerReleasedMessages = Math.min(messageDemand, workerCapacity);
-    const downstreamDemand = requestDemand + workerReleasedMessages;
-    const routeAllocations = calculateRouteAllocations(design, offered, affectedRegions);
-    const cacheMisses = Math.ceil(downstreamDemand * (1 - cacheHitRate));
-    const workingSet = Math.ceil(downstreamDemand * (hotKeyPressure > 0 ? 0.03 : 0.18));
-    const cacheEvictions = cache ? Math.max(0, workingSet - cache.config.cacheSize) : 0;
-    const originLoad = cacheMisses + cacheEvictions;
-    const databaseServiceTimeMs =
-      database.config.serviceTimeMs * (databaseSlowed ? DATABASE_SLOWDOWN_FACTOR : 1);
-    const connectionCapacity = Math.floor(
-      (database.config.connectionLimit * (activeReplicas[database.id] ?? 0) * 4000) /
-        databaseServiceTimeMs,
-    );
-    const databaseCapacity =
-      databaseFailed || (activeReplicas[database.id] ?? 0) <= 0
-        ? 0
-        : Math.max(
-            1,
-            Math.min(capacityFor(database, databaseServiceTimeMs), Math.max(1, connectionCapacity)),
-          );
-    const cacheCapacity =
-      cache && !cacheFailed ? capacityFor(cache) * (1 - hotKeyPressure * 0.5) : 0;
-    const routedTransportNodes = transportNodes;
-    const transportCapacity = routedTransportNodes.length
-      ? Math.floor(
-          Math.min(
-            ...routedTransportNodes.map((node) => {
-              const trafficShare = trafficShareReachingNode(design, node.id);
-              return trafficShare > 0 ? capacityFor(node) / trafficShare : Number.POSITIVE_INFINITY;
-            }),
-          ),
-        )
-      : Number.POSITIVE_INFINITY;
-    const failedDatabaseAttempts = databaseFailed
-      ? originLoad
-      : Math.max(0, originLoad - databaseCapacity);
-    const workerOriginShare =
-      downstreamDemand === 0 ? 0 : workerReleasedMessages / downstreamDemand;
-    const retryPolicies = resilienceNodes.map((node) => {
-      const retryBase =
-        node.type === "worker" ? Math.ceil(originLoad * workerOriginShare) : originLoad;
-      const retryableAttempts =
-        databaseServiceTimeMs > node.config.timeoutMs
-          ? retryBase
-          : Math.min(retryBase, failedDatabaseAttempts);
-      return { node, attempts: retryableAttempts * node.config.retries };
-    });
-    const retryAttempts = retryPolicies.reduce((sum, policy) => sum + policy.attempts, 0);
-    const amplifiedLoad = originLoad + retryAttempts;
-    const activeRetryPolicies = retryPolicies.filter((policy) => policy.attempts > 0);
-    if (retryAttempts > 0 && !retriesWereActive) {
-      const retrySource = activeRetryPolicies[0]!.node;
-      events.push({
-        second,
-        type: "retry-amplification",
-        nodeId: retrySource.id,
-        message: `${activeRetryPolicies.map((policy) => policy.node.label).join(", ")} issue ${retryAttempts.toLocaleString()} retries, amplifying database load to ${amplifiedLoad.toLocaleString()} attempts.`,
-      });
-    }
-    retriesWereActive = retryAttempts > 0;
-    const retryMultiplier = originLoad === 0 ? 1 : amplifiedLoad / originLoad;
-    const originRequestCapacity = Math.floor(databaseCapacity / retryMultiplier);
-    const synchronousCapacity =
-      transportCapacity === 0 || (databaseCapacity === 0 && cacheHitRate === 0)
-        ? 0
-        : Math.max(
-            1,
-            Math.floor(
-              Math.min(transportCapacity, originRequestCapacity + cacheCapacity * cacheHitRate),
-            ),
-          );
-    const requestCapacity = synchronousCapacity;
-    const admittedRequests = Math.min(requestDemand, requestCapacity);
-    const remainingSharedCapacity = Math.max(0, synchronousCapacity - admittedRequests);
-    const admittedMessages = Math.min(messageDemand, workerCapacity, remainingSharedCapacity);
-    const admitted = admittedRequests + admittedMessages;
-    const bottleneck =
-      amplifiedLoad > databaseCapacity
-        ? database
-        : queueNode && queueTrafficShare > 0 && messageDemand > admittedMessages
-          ? (workerNodes[0] ?? queueNode)
-          : transportNodes.reduce(
-              (lowest, node) => (capacityFor(node) < capacityFor(lowest) ? node : lowest),
-              transportNodes[0] ?? database,
-            );
-    const inFlight = Math.min(Math.ceil(admitted * 0.1), admitted);
-    const successful = cdnHits + admitted - inFlight;
-    const requestExcess = Math.max(0, requestDemand - admittedRequests);
-    const messageExcess = Math.max(0, messageDemand - admittedMessages);
-    const excess = requestExcess + messageExcess;
-    const timeoutQueueBudget = Math.max(0, Math.floor(requestCapacity * (requestTimeoutMs / 1000)));
-    const timedOut = Math.min(
-      requestExcess,
-      Math.max(0, previousRequestBacklog - timeoutQueueBudget),
-    );
-    const queueBudget =
-      queueNode && queueTrafficShare > 0
-        ? queueNode.config.queueCapacity * (activeReplicas[queueNode.id] ?? 0)
-        : 20_000;
-    const droppedMessages =
-      queueNode && queueTrafficShare > 0 ? Math.max(0, messageExcess - queueBudget) : 0;
-    const droppedRequests = Math.max(0, requestExcess - timedOut - 20_000);
-    const dropped = networkDropped + removalDropped + droppedMessages + droppedRequests;
-    requestBacklog = Math.max(0, requestExcess - timedOut - droppedRequests);
-    messageBacklog = Math.max(0, messageExcess - droppedMessages);
-    const queue = requestBacklog + messageBacklog;
-    const acceptedFreshMessages =
-      queueNode && queueTrafficShare > 0
-        ? Math.min(freshMessages, Math.max(0, queueBudget - previousMessageBacklog))
-        : Math.min(freshMessages, Math.max(0, admittedMessages - previousMessageBacklog));
-    const currentWorkAdmitted =
-      Math.min(freshRequests, Math.max(0, admittedRequests - previousRequestBacklog)) +
-      acceptedFreshMessages;
-    const availability = offered === 0 ? 1 : (cdnHits + currentWorkAdmitted) / offered;
-    const p95LatencyMs = Math.round(
-      42 +
-        (requestBacklog / Math.max(1, synchronousCapacity)) * 420 +
-        databaseServiceTimeMs +
-        networkLatencyMs +
-        activeRetryPolicies.reduce(
-          (delay, policy) => delay + policy.node.config.retries * policy.node.config.timeoutMs,
-          0,
-        ),
-    );
-    const regionalCost = Number(
-      routeAllocations
-        .reduce((total, route) => {
-          const source = design.nodes.find((node) => node.id === route.sourceNodeId)!;
-          const target = design.nodes.find((node) => node.id === route.targetNodeId)!;
-          return (
-            total +
-            route.offered *
-              networkLatencyBetween(source.config.region, target.config.region, affectedRegions) *
-              REGIONAL_COST_PER_RPS_MS
-          );
-        }, 0)
-        .toFixed(2),
-    );
-    const cost = Number(
-      (
-        nodes.reduce((sum, node) => sum + componentCost(node, activeReplicas[node.id] ?? 0), 0) +
-        regionalCost
-      ).toFixed(2),
-    );
-    if (excess > 0 && !firstSaturatedNodeId) {
-      firstSaturatedNodeId = bottleneck.id;
-      events.push({
-        second,
-        type: "saturation",
-        nodeId: bottleneck.id,
-        message: `${bottleneck.label} reaches finite capacity.`,
-      });
-    }
-    if (droppedMessages > 0)
-      events.push({
-        second,
-        type: "queue-overflow",
-        nodeId: queueNode?.id,
-        message: `${droppedMessages.toLocaleString()} messages are dropped after the queue reaches its ${queueBudget.toLocaleString()} message limit.`,
-      });
-    const databaseConnections = databaseFailed
-      ? 0
-      : Math.min(
-          database.config.connectionLimit * (activeReplicas[database.id] ?? 0),
-          Math.ceil((amplifiedLoad * databaseServiceTimeMs) / 4000),
-        );
-    const databaseQueue = Math.max(0, amplifiedLoad - databaseCapacity);
-    const nodeDemand = Object.fromEntries(
-      nodes.map((node) => {
-        const grossTransportDemand = offered * trafficShareReachingNode(design, node.id);
-        const cdnAvoidedDemand =
-          cdn && node.id !== cdn.id
-            ? cdnHits * trafficShareBetweenNodes(design, cdn.id, node.id)
-            : 0;
-        return [
-          node.id,
-          node.type === "queue"
-            ? messageDemand
-            : node.type === "worker"
-              ? messageDemand * (workerTrafficShares.get(node.id) ?? 0)
-              : node.type === "cache" || node.type === "primary-database"
-                ? amplifiedLoad
-                : Math.max(0, grossTransportDemand - cdnAvoidedDemand),
-        ];
-      }),
-    );
-    for (const node of nodes.filter((candidate) => candidate.config.autoscaling.enabled)) {
-      const policy = node.config.autoscaling;
-      const pendingDelta = pendingDeployments
-        .filter((deployment) => deployment.nodeId === node.id)
-        .reduce(
-          (sum, deployment) => sum + (deployment.kind === "capacity" ? deployment.replicaDelta : 0),
-          0,
-        );
-      const projectedReplicas = (activeReplicas[node.id] ?? 0) + pendingDelta;
-      const queuedDemand = transportNodes.some((transport) => transport.id === node.id)
-        ? previousRequestBacklog * trafficShareReachingNode(design, node.id)
-        : 0;
-      const utilization =
-        (((nodeDemand[node.id] ?? 0) + queuedDemand) / Math.max(1, capacityFor(node))) * 100;
-      const cooldownElapsed = second - (lastScalingAction[node.id] ?? -Infinity);
-      const canScale = cooldownElapsed >= policy.cooldownSeconds;
-      const scaleOut = utilization >= policy.threshold && projectedReplicas < policy.maxReplicas;
-      const scaleIn =
-        utilization < policy.threshold * 0.5 && projectedReplicas > policy.minReplicas;
-      if (!canScale || (!scaleOut && !scaleIn)) continue;
-      const replicaDelta = scaleOut ? 1 : -1;
-      pendingDeployments.push({
-        kind: "capacity",
-        nodeId: node.id,
-        readyAtSecond: second + Math.max(1, policy.startupDelaySeconds),
-        replicaDelta,
-        source: "autoscaling",
-      });
-      lastScalingAction[node.id] = second;
-      events.push({
-        second,
-        type: scaleOut ? "scale-out-requested" : "scale-in-requested",
-        nodeId: node.id,
-        message: `${node.label} requests ${scaleOut ? "one more" : "one fewer"} replica at ${Math.round(utilization)}% utilization; deployment takes ${Math.max(1, policy.startupDelaySeconds)}s.`,
-      });
-    }
-    const nodeHealth = buildNodeHealth({
-      nodes,
-      cache,
-      database,
-      queueNode,
-      workerNodes,
-      cacheFailed,
-      hotKeyPressure,
-      databaseFailed,
-      databaseSlowed,
-      affectedRegions,
-      databaseQueue,
-      queueBacklog: queueNode && queueTrafficShare > 0 ? messageBacklog : 0,
-      droppedMessages,
-      recoveredDatabase: Boolean(
-        recoveredIncident &&
-        ["database-slowdown", "database-failure"].includes(recoveredIncident.type),
-      ),
-      recoveredRegion:
-        recoveredIncident?.type === "regional-latency" ? recoveredIncident.region : undefined,
-      bottleneckId: excess > 0 ? bottleneck.id : undefined,
-      nodeDemand,
-      activeReplicas,
-    });
-    const systemHealth = overallHealth(Object.values(nodeHealth));
-    const snapshot: Snapshot = {
-      second,
-      offered,
-      successful,
-      queued: queue,
-      dropped,
-      timedOut,
-      inFlight,
-      availability,
-      p95LatencyMs,
-      throughput: cdnHits + admitted,
-      cost,
-      networkLatencyMs,
-      regionalCost,
-      routeAllocations,
-      activeReplicas: { ...activeReplicas },
-      nodeCapacity: Object.fromEntries(nodes.map((node) => [node.id, capacityFor(node)])),
-      nodeUtilization: Object.fromEntries(
-        nodes.map((node) => [
-          node.id,
-          Math.min(999, Math.round(((nodeDemand[node.id] ?? 0) / Math.max(1, capacityFor(node))) * 100)),
-        ]),
-      ),
-      pendingDeployments: pendingDeployments.map((deployment) => ({
-        ...deployment,
-      })),
-      cacheHitRate,
-      cdnHitRate,
-      originLoad,
-      hotKeyPressure,
-      cacheMisses,
-      cacheEvictions,
-      cacheHealth,
-      retryAttempts,
-      amplifiedLoad,
-      databaseConnections,
-      databaseQueue,
-      queueBacklog: queueNode && queueTrafficShare > 0 ? messageBacklog : 0,
-      droppedMessages,
-      nodeHealth,
-      systemHealth,
-      saturatedNodeId: firstSaturatedNodeId,
-    };
-    snapshots.push(snapshot);
-    if (
-      availability < scenario.availabilityTarget ||
-      p95LatencyMs > scenario.p95TargetMs ||
-      (offered >= scenario.throughputTarget && cdnHits + admitted < scenario.throughputTarget) ||
-      cost > scenario.costCeiling
-    ) {
-      events.push({
-        second,
-        type: "slo-breach",
-        nodeId: firstSaturatedNodeId,
-        message: `Objective breached: ${Math.round(availability * 10000) / 100}% availability, p95 ${p95LatencyMs}ms.`,
-      });
-      objectiveBreached = true;
-      if (!scenario.observeRecovery)
-        return result(
-          validation,
-          snapshots,
-          events,
-          "failed",
-          firstSaturatedNodeId,
-          seed,
-          architecture,
-          scenario,
-        );
-    }
-  }
-  const unmetRequirement = unmetSuccessRequirement(design, snapshots, scenario.successRequirements);
-  if (unmetRequirement) {
-    events.push({
-      second: Math.max(0, scenario.durationSeconds - 1),
-      type: "slo-breach",
-      message: `Objective breached: ${unmetRequirement}`,
-    });
-  }
-  return result(
-    validation,
-    snapshots,
-    events,
-    objectiveBreached || unmetRequirement ? "failed" : "passed",
-    firstSaturatedNodeId,
-    seed,
-    architecture,
-    scenario,
-  );
-}
-
-function unmetSuccessRequirement(
-  architecture: Architecture,
-  snapshots: Snapshot[],
-  requirements: ScenarioSuccessRequirements | undefined,
-) {
-  if (!requirements) return undefined;
-  const reachable = reachableNodeIds(architecture);
-  for (const type of requirements.activeComponents ?? []) {
-    const active = architecture.nodes.some(
-      (node) => node.type === type && reachable.has(node.id) && node.config.replicas > 0,
-    );
-    if (!active) return `the ${type.replaceAll("-", " ")} system was not active.`;
-  }
-  for (const [type, minimum] of Object.entries(requirements.minimumReplicas ?? {})) {
-    const replicas = architecture.nodes
-      .filter((node) => node.type === type && reachable.has(node.id))
-      .reduce((total, node) => total + node.config.replicas, 0);
-    if (minimum !== undefined && replicas < minimum) {
-      return `the ${type.replaceAll("-", " ")} tier needed ${minimum} active replicas.`;
-    }
-  }
-  for (const [type, minimum] of Object.entries(requirements.minimumComponents ?? {})) {
-    const count = architecture.nodes.filter(
-      (node) => node.type === type && reachable.has(node.id),
-    ).length;
-    if (minimum !== undefined && count < minimum) {
-      return `the ${type.replaceAll("-", " ")} tier needed ${minimum} separate components.`;
-    }
-  }
-  if (requirements.minimumDatabaseLevel) {
-    const database = architecture.nodes.find((node) => node.type === "primary-database");
-    const level = database ? databaseCapacityLevel(database) : 0;
-    if (level < requirements.minimumDatabaseLevel) {
-      return "the primary database needed a capacity upgrade.";
-    }
-  }
-  for (const route of requirements.requiredRoutes ?? []) {
-    const connected = architecture.edges.some((edge) => {
-      const source = architecture.nodes.find((node) => node.id === edge.source);
-      const target = architecture.nodes.find((node) => node.id === edge.target);
-      return (
-        source?.type === route.source &&
-        target?.type === route.target &&
-        reachable.has(source.id) &&
-        reachable.has(target.id)
-      );
-    });
-    if (!connected) {
-      return `traffic did not follow the ${route.source.replaceAll("-", " ")} to ${route.target.replaceAll("-", " ")} route.`;
-    }
-  }
-  for (const route of requirements.forbiddenRoutes ?? []) {
-    const bypass = architecture.edges.some((edge) => {
-      const source = architecture.nodes.find((node) => node.id === edge.source);
-      const target = architecture.nodes.find((node) => node.id === edge.target);
-      return source?.type === route.source && target?.type === route.target;
-    });
-    if (bypass) {
-      return `the ${route.source.replaceAll("-", " ")} to ${route.target.replaceAll("-", " ")} bypass was still active.`;
-    }
-  }
-  if (
-    requirements.requireRetriesDisabled &&
-    architecture.nodes.some((node) => node.type === "api-server" && node.config.retries > 0)
-  ) {
-    return "API retries were still amplifying downstream pressure.";
-  }
-  if (
-    requirements.activeComponents?.includes("cache") &&
-    !snapshots.some((snapshot) => snapshot.cacheHitRate > 0)
-  ) {
-    return "the cache did not serve traffic.";
-  }
-  const nodesById = new Map(architecture.nodes.map((node) => [node.id, node]));
-  const regions = new Set(
-    snapshots.flatMap((snapshot) =>
-      snapshot.routeAllocations
-        .filter((allocation) => allocation.offered > 0)
-        .map((allocation) => nodesById.get(allocation.targetNodeId)?.config.region)
-        .filter((region): region is Region => Boolean(region)),
-    ),
-  );
-  if (requirements.minimumRegions && regions.size < requirements.minimumRegions) {
-    return `traffic did not reach ${requirements.minimumRegions} regions.`;
-  }
-  if (requirements.minimumRegionalPaths) {
-    const regionalPaths = new Set<string>();
-    for (const dnsNode of architecture.nodes.filter((node) => node.type === "dns")) {
-      for (const dnsEdge of architecture.edges.filter((edge) => edge.source === dnsNode.id)) {
-        const loadBalancer = nodesById.get(dnsEdge.target);
-        if (loadBalancer?.type !== "load-balancer") continue;
-        const hasRegionalApi = architecture.edges.some((edge) => {
-          const api = nodesById.get(edge.target);
-          return (
-            edge.source === loadBalancer.id &&
-            api?.type === "api-server" &&
-            api.config.region === loadBalancer.config.region
-          );
-        });
-        if (hasRegionalApi) regionalPaths.add(loadBalancer.config.region);
-      }
-    }
-    if (regionalPaths.size < requirements.minimumRegionalPaths) {
-      return `DNS needed ${requirements.minimumRegionalPaths} complete regional load balancer and API paths.`;
-    }
-  }
-  if (
-    requirements.requireWeightedRouting &&
-    !snapshots.some((snapshot) => {
-      const allocationsBySource = new Map<string, typeof snapshot.routeAllocations>();
-      for (const allocation of snapshot.routeAllocations) {
-        if (allocation.offered <= 0) continue;
-        const allocations = allocationsBySource.get(allocation.sourceNodeId) ?? [];
-        allocations.push(allocation);
-        allocationsBySource.set(allocation.sourceNodeId, allocations);
-      }
-      return [...allocationsBySource.values()].some((allocations) => {
-        if (allocations.length < 2) return false;
-        const targetRegions = new Set(
-          allocations.map((allocation) => nodesById.get(allocation.targetNodeId)?.config.region),
-        );
-        return targetRegions.size >= 2;
-      });
-    })
-  ) {
-    return "traffic was not split across weighted routes.";
-  }
-  return undefined;
-}
-
-export type SimulationSession = {
-  architecture: Architecture;
-  scenario: Scenario;
-  commands: SimulationCommand[];
-  seed: number;
-  second: number;
-  result: SimulationResult;
-};
-
-export type SimulationStep = {
-  session: SimulationSession;
-  snapshot?: Snapshot;
-  events: SimulationEvent[];
-  appliedCommands: Array<Exclude<SimulationCommand, EngineSimulationCommand>>;
-  complete: boolean;
-};
-
-export function createSimulationSession(input: {
-  architecture: Architecture;
-  scenario?: Scenario;
-  commands?: SimulationCommand[];
-  seed?: number;
-}): SimulationSession {
-  const scenario = input.scenario ?? starterScenario;
-  const commands = input.commands ?? [];
-  const seed = input.seed ?? 1;
-  return {
-    architecture: structuredClone(input.architecture),
-    scenario: structuredClone(scenario),
-    commands: structuredClone(commands),
-    seed,
-    second: -1,
-    result: runSimulation(input.architecture, scenario, commands, seed),
-  };
-}
-
-export function stepSimulation(
-  current: SimulationSession,
-  commands: SimulationCommand[] = [],
-): SimulationStep {
-  const nextCommands = commands.length > 0 ? [...current.commands, ...commands] : current.commands;
-  const nextSecond = Math.min(current.second + 1, current.scenario.durationSeconds - 1);
-  const activatingCommands = nextCommands.filter(
-    (command): command is Exclude<SimulationCommand, EngineSimulationCommand> =>
-      isSessionCommand(command) &&
-      command.atSecond + Math.max(0, command.deploymentDelaySeconds) === nextSecond,
-  );
-  const architecture = structuredClone(current.architecture);
-  const scenario = structuredClone(current.scenario);
-  for (const command of activatingCommands) applySessionCommand(architecture, scenario, command);
-  const recomputed =
-    activatingCommands.length > 0 || commands.some(isEngineCommand)
-      ? runSimulation(architecture, scenario, nextCommands, current.seed)
-      : current.result;
-  const result =
-    activatingCommands.length > 0
-      ? preserveSimulationHistory(current.result, recomputed, current.second)
-      : recomputed;
-  const second = Math.min(nextSecond, Math.max(0, result.snapshots.length - 1));
-  const session = {
-    ...current,
-    architecture,
-    scenario,
-    commands: nextCommands,
-    result,
-    second,
-  };
-  return {
-    session,
-    snapshot: result.snapshots[second],
-    events: result.events.filter((event) => event.second === second),
-    appliedCommands: activatingCommands,
-    complete: second >= result.snapshots.length - 1,
-  };
-}
-
-export function queueSimulationCommands(
-  current: SimulationSession,
-  commands: SimulationCommand[],
-): SimulationSession {
-  if (commands.length === 0) return current;
-  const nextCommands = [...current.commands, ...commands];
-  const result = commands.some(isEngineCommand)
-    ? preserveSimulationHistory(
-        current.result,
-        runSimulation(current.architecture, current.scenario, nextCommands, current.seed),
-        current.second,
-      )
-    : current.result;
-  return { ...current, commands: nextCommands, result };
-}
-
-function isEngineCommand(command: SimulationCommand): command is EngineSimulationCommand {
-  return ["traffic", "configure", "capacity"].includes(command.type);
-}
-
-function isSessionCommand(
-  command: SimulationCommand,
-): command is Exclude<SimulationCommand, EngineSimulationCommand> {
-  return !isEngineCommand(command);
-}
-
-function applySessionCommand(
-  architecture: Architecture,
-  scenario: Scenario,
-  command: Exclude<SimulationCommand, EngineSimulationCommand>,
-) {
-  if (command.type === "add-node") {
-    if (!architecture.nodes.some((node) => node.id === command.node.id)) {
-      architecture.nodes.push(structuredClone(command.node));
-    }
-  } else if (command.type === "remove-node") {
-    architecture.nodes = architecture.nodes.filter((node) => node.id !== command.nodeId);
-    architecture.edges = architecture.edges.filter(
-      (edge) => edge.source !== command.nodeId && edge.target !== command.nodeId,
-    );
-  } else if (command.type === "connect") {
-    if (!architecture.edges.some((edge) => edge.id === command.edge.id)) {
-      architecture.edges.push(structuredClone(command.edge));
-    } else {
-      architecture.edges = architecture.edges.map((edge) =>
-        edge.id === command.edge.id ? structuredClone(command.edge) : edge,
-      );
-    }
-  } else if (command.type === "disconnect") {
-    architecture.edges = architecture.edges.filter((edge) => edge.id !== command.edgeId);
-  } else if (command.type === "incident") {
-    scenario.incidents = [
-      ...(scenario.incidents ?? []),
-      {
-        ...command.incident,
-        atSecond: command.atSecond + command.deploymentDelaySeconds,
-      },
-    ];
-  }
-}
-
-function preserveSimulationHistory(
-  previous: SimulationResult,
-  recomputed: SimulationResult,
-  throughSecond: number,
-): SimulationResult {
-  return {
-    ...recomputed,
-    snapshots: [
-      ...previous.snapshots.filter((snapshot) => snapshot.second <= throughSecond),
-      ...recomputed.snapshots.filter((snapshot) => snapshot.second > throughSecond),
-    ],
-    events: [
-      ...previous.events.filter((event) => event.second <= throughSecond),
-      ...recomputed.events.filter((event) => event.second > throughSecond),
-    ],
-  };
-}
-
-function result(
-  validation: ReturnType<typeof validateArchitecture>,
-  snapshots: Snapshot[],
-  events: SimulationEvent[],
-  outcome: SimulationResult["outcome"],
-  firstSaturatedNodeId: string | undefined,
-  seed: number,
-  architecture: Architecture,
-  scenario: Scenario,
-): SimulationResult {
-  return {
-    validation,
-    snapshots,
-    events,
-    outcome,
-    firstSaturatedNodeId,
-    seed,
-    architectureVersion: architecture.version,
-    scenarioVersion: scenario.version,
-  };
-}
-
-const DATABASE_SLOWDOWN_FACTOR = 4;
-const REGIONAL_COST_PER_RPS_MS = 0.000002;
-
-function effectiveCapacity(
-  node: Architecture["nodes"][number],
-  serviceTimeMs = node.config.serviceTimeMs,
-  replicas = node.config.replicas,
-) {
-  if (replicas <= 0) return 0;
-  const serviceLimit = (node.config.concurrency * 1000) / serviceTimeMs;
-  return Math.max(1, Math.floor(Math.min(node.config.capacity, serviceLimit) * replicas));
-}
-
-function incidentDuration(incident: ScenarioIncident) {
-  if (incident.durationSeconds !== undefined) return Math.max(1, incident.durationSeconds);
-  if (incident.type === "database-slowdown") return 5;
-  if (incident.type === "database-failure") return 4;
-  if (incident.type === "regional-latency") return 3;
-  return Number.POSITIVE_INFINITY;
-}
-
-function incidentIsActive(incident: ScenarioIncident, second: number) {
-  return second >= incident.atSecond && second < incident.atSecond + incidentDuration(incident);
-}
-
-function incidentStarts(scenario: Scenario, type: ScenarioIncident["type"], second: number) {
-  return scenario.incidents?.some(
-    (incident) => incident.type === type && incident.atSecond === second,
-  );
-}
-
-type NodeHealthInput = {
-  nodes: Architecture["nodes"];
-  cache: Architecture["nodes"][number] | undefined;
-  database: Architecture["nodes"][number];
-  queueNode: Architecture["nodes"][number] | undefined;
-  workerNodes: Architecture["nodes"];
-  cacheFailed: boolean;
-  hotKeyPressure: number;
-  databaseFailed: boolean;
-  databaseSlowed: boolean;
-  affectedRegions: Set<Region>;
-  databaseQueue: number;
+type EngineState = {
+  apiRunning: number;
+  apiWarming: number[];
+  apiCrashed: number;
+  crashAt?: number;
+  lowUtilizationSeconds: number;
+  lastScaleAt: number;
+  backlog: { api: number; database: number; replica: number; cache: number };
   queueBacklog: number;
-  droppedMessages: number;
-  recoveredDatabase: boolean;
-  recoveredRegion: Region | undefined;
-  bottleneckId: string | undefined;
-  nodeDemand: Record<string, number>;
-  activeReplicas: Record<string, number>;
+  poisonRetrying: number;
+  workersCrashed: number;
+  workerRestartAt?: number;
+  primary: "up" | "down" | "promoted";
+  promoteAt?: number;
+  restoringUntil?: number;
+  dataLost: boolean;
+  linkRows: number;
+  databaseUtilization: number;
+  saturated: Set<NodeType>;
 };
 
-function buildNodeHealth(input: NodeHealthInput): Record<string, SemanticHealth> {
-  const health = Object.fromEntries(
-    input.nodes.map((node) => [node.id, "healthy" as SemanticHealth]),
-  );
-  for (const node of input.nodes) {
-    const utilization =
-      (input.nodeDemand[node.id] ?? 0) /
-      Math.max(
-        1,
-        effectiveCapacity(node, node.config.serviceTimeMs, input.activeReplicas[node.id]),
-      );
-    if (utilization >= 0.75) health[node.id] = "heating";
+const HEALTH_CHECK_SECONDS = 2;
+const WARMUP_SECONDS = 6;
+const TIMEOUT_SECONDS = 1;
+const ARCHIVE_LATENCY_MS = 90;
+const BATCH_SIZE = 20;
+
+export function valueAt(frames: Keyframes | undefined, second: number) {
+  if (!frames || frames.length === 0) return 0;
+  if (second <= frames[0]![0]) return frames[0]![1];
+  for (let index = 1; index < frames.length; index += 1) {
+    const [end, endValue] = frames[index]!;
+    const [start, startValue] = frames[index - 1]!;
+    if (second <= end) {
+      return startValue + ((endValue - startValue) * (second - start)) / Math.max(1, end - start);
+    }
   }
-  for (const node of input.nodes) {
-    if (input.affectedRegions.has(node.config.region)) health[node.id] = "heating";
-    if (input.recoveredRegion === node.config.region) health[node.id] = "recovered";
-  }
-  if (input.cache) {
-    if (input.cacheFailed) health[input.cache.id] = "failed";
-    else if (input.hotKeyPressure > 0) health[input.cache.id] = "heating";
-  }
-  if (input.databaseFailed) health[input.database.id] = "failed";
-  else if (input.databaseQueue > 0) health[input.database.id] = "saturated";
-  else if (input.databaseSlowed) health[input.database.id] = "heating";
-  else if (input.recoveredDatabase) health[input.database.id] = "recovered";
-  if (input.queueNode && input.queueBacklog > 0) health[input.queueNode.id] = "queued";
-  if (input.queueNode && input.droppedMessages > 0) health[input.queueNode.id] = "saturated";
-  if (input.queueBacklog > 0) {
-    for (const worker of input.workerNodes) health[worker.id] = "queued";
-  }
-  if (input.bottleneckId && health[input.bottleneckId] !== "failed") {
-    health[input.bottleneckId] = "saturated";
-  }
-  return health;
+  return frames.at(-1)![1];
 }
 
-function overallHealth(states: SemanticHealth[]): SemanticHealth {
-  const precedence: SemanticHealth[] = [
-    "failed",
-    "saturated",
-    "queued",
-    "heating",
-    "recovered",
-    "healthy",
-  ];
-  return precedence.find((state) => states.includes(state)) ?? "healthy";
-}
-
-function calculateCacheHitRate(cache: Architecture["nodes"][number], hotKeyPressure: number) {
-  const sizeFactor = Math.min(0.22, Math.log10(Math.max(1, cache.config.cacheSize)) * 0.055);
-  const ttlFactor = Math.min(0.3, cache.config.ttlSeconds / 1000);
-  return Number(
-    Math.max(0.05, Math.min(0.92, 0.4 + sizeFactor + ttlFactor - hotKeyPressure * 0.45)).toFixed(3),
-  );
-}
-
-function componentCost(node: Architecture["nodes"][number], replicas = node.config.replicas) {
-  if (node.type === "api-server") return replicas * 1.2;
-  if (node.type === "worker") return replicas * 0.9;
-  if (node.type === "primary-database") return [0, 2.5, 4.5, 7][databaseCapacityLevel(node)]!;
-  const managedCost: Record<ComponentType, number> = {
-    client: 0,
-    dns: 0.8,
-    cdn: 2.4,
-    "load-balancer": 1.4,
-    "api-server": 0,
-    cache: 2,
-    "primary-database": 0,
-    "read-replica": 1.8,
-    queue: 1.2,
-    worker: 0,
-  };
-  return managedCost[node.type];
-}
-
-function calculateRouteAllocations(
-  architecture: Architecture,
-  offered: number,
-  affectedRegions: Set<Region>,
-): RouteAllocation[] {
-  const clients = architecture.nodes.filter((node) => node.type === "client");
-  if (clients.length === 0) return [];
-  return architecture.edges
-    .map((edge) => {
-      const outgoing = architecture.edges.filter((candidate) => candidate.source === edge.source);
-      const totalWeight = outgoing.reduce((sum, candidate) => sum + candidate.weight, 0);
-      const sourceShare =
-        clients.reduce(
-          (share, client) => share + trafficShareBetweenNodes(architecture, client.id, edge.source),
-          0,
-        ) / clients.length;
-      const normalizedWeight = edge.weight / totalWeight;
-      const source = architecture.nodes.find((node) => node.id === edge.source)!;
-      const target = architecture.nodes.find((node) => node.id === edge.target)!;
-      return {
-        sourceNodeId: edge.source,
-        targetNodeId: edge.target,
-        weight: Math.round(normalizedWeight * 100),
-        offered: Math.round(offered * sourceShare * normalizedWeight),
-        latencyMs: networkLatencyBetween(
-          source.config.region,
-          target.config.region,
-          affectedRegions,
-        ),
-        affected:
-          affectedRegions.has(source.config.region) || affectedRegions.has(target.config.region),
-      };
-    })
-    .filter((route) => route.offered > 0);
-}
-
-function calculatePathNetwork(architecture: Architecture, affectedRegions: Set<Region>) {
-  const clients = architecture.nodes.filter((node) => node.type === "client");
-  const paths = clients.flatMap((client) =>
-    pathNetworkFromNode(architecture, client.id, affectedRegions).map((path) => ({
-      ...path,
-      share: path.share / Math.max(1, clients.length),
-    })),
-  );
-  const sorted = [...paths].sort((left, right) => left.latencyMs - right.latencyMs);
-  let cumulativeShare = 0;
-  let p95LatencyMs = 0;
-  for (const path of sorted) {
-    cumulativeShare += path.share;
-    p95LatencyMs = path.latencyMs;
-    if (cumulativeShare >= 0.95) break;
+function stage(load: number, backlog: number, capacity: number): Stage {
+  const offered = load + backlog;
+  if (capacity <= 0) {
+    return { backlog: 0, dropFraction: offered > 0 ? 1 : 0, utilization: offered > 0 ? 9.99 : 0, waitMs: 0 };
   }
+  let remaining = Math.max(0, offered - capacity);
+  const dropped = Math.max(0, remaining - capacity * TIMEOUT_SECONDS);
+  remaining -= dropped;
   return {
-    p95LatencyMs,
-    affectedShare: Math.min(
-      1,
-      paths.filter((path) => path.affected).reduce((sum, path) => sum + path.share, 0),
+    backlog: remaining,
+    dropFraction: offered > 0 ? dropped / offered : 0,
+    utilization: load / capacity,
+    waitMs: (remaining / capacity) * 1000,
+  };
+}
+
+/** Queueing delay grows sharply as a component approaches full utilization. */
+function serviceMs(baseMs: number, current: Stage) {
+  const busy = Math.min(current.utilization, 0.95);
+  return baseMs * (1 + (2 * busy) / (1 - busy)) + current.waitMs;
+}
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function health(current: Stage, capacity: number, load: number): Health {
+  if (capacity <= 0) return load > 0 ? "failed" : "idle";
+  if (load <= 0 && current.backlog <= 0) return "idle";
+  if (current.backlog > 0 || current.dropFraction > 0 || current.utilization >= 0.95) return "saturated";
+  if (current.utilization >= 0.75) return "busy";
+  return "healthy";
+}
+
+function nodeSnapshot(load: number, capacity: number, current: Stage, detail: string): NodeSnapshot {
+  return {
+    load: Math.round(load),
+    capacity: Math.round(capacity),
+    utilization: capacity > 0 ? load / capacity : load > 0 ? 9.99 : 0,
+    health: health(current, capacity, load),
+    detail,
+  };
+}
+
+function percentile(classes: LatencyClass[], share: number) {
+  const total = classes.reduce((sum, item) => sum + item.volume, 0);
+  if (total <= 0) return 0;
+  const sorted = [...classes].filter((item) => item.volume > 0).sort((a, b) => a.latencyMs - b.latencyMs);
+  let cumulative = 0;
+  for (const item of sorted) {
+    cumulative += item.volume;
+    if (cumulative / total >= share) return item.latencyMs;
+  }
+  return sorted.at(-1)?.latencyMs ?? 0;
+}
+
+function initialState(topology: Topology, scenario: Scenario): EngineState {
+  const api = topology.api.config;
+  const running = api.autoscaling.enabled
+    ? Math.min(api.autoscaling.max, Math.max(api.autoscaling.min, api.instances))
+    : api.instances;
+  return {
+    apiRunning: running,
+    apiWarming: [],
+    apiCrashed: 0,
+    lowUtilizationSeconds: 0,
+    lastScaleAt: -Infinity,
+    backlog: { api: 0, database: 0, replica: 0, cache: 0 },
+    queueBacklog: 0,
+    poisonRetrying: 0,
+    workersCrashed: 0,
+    primary: "up",
+    dataLost: false,
+    linkRows: scenario.data.linkRows,
+    databaseUtilization: 0,
+    saturated: new Set(),
+  };
+}
+
+export function runSimulation(architecture: Architecture, scenario: Scenario): SimulationResult {
+  const validation = validatePark(architecture);
+  if (!validation.ok) {
+    return { validation, snapshots: [], events: [], totals: summarize([], []) };
+  }
+  const topology = validation.topology;
+  const params = { ...defaultParams, ...scenario.params };
+  const state = initialState(topology, scenario);
+  const snapshots: Snapshot[] = [];
+  const events: SimEvent[] = [];
+  for (let second = 0; second < scenario.durationSeconds; second += 1) {
+    snapshots.push(tick(topology, architecture.nodes, scenario, params, state, second, events));
+  }
+  return { validation, snapshots, events, totals: summarize(snapshots, events) };
+}
+
+function tick(
+  topology: Topology,
+  billed: Architecture["nodes"],
+  scenario: Scenario,
+  params: ScenarioParams,
+  state: EngineState,
+  second: number,
+  events: SimEvent[],
+): Snapshot {
+  const { api, database, cache, replica, queue, worker, archive, loadBalancer } = topology;
+  const traffic = scenario.traffic;
+  const redirects = valueAt(traffic.redirects, second);
+  const creates = valueAt(traffic.creates, second);
+  const edits = valueAt(traffic.edits, second);
+  const dashboard = valueAt(traffic.dashboard, second);
+  const viewers = valueAt(traffic.viewers, second);
+  const bots = valueAt(traffic.bots, second);
+  const hotKey = Math.min(redirects, valueAt(traffic.hotKey, second));
+  const emit = (kind: SimEvent["kind"], message: string, node?: NodeType) =>
+    events.push({ second, kind, message, node });
+
+  // Deployments and incidents that change the park this second.
+  const ready = state.apiWarming.filter((readyAt) => readyAt <= second);
+  if (ready.length > 0) {
+    state.apiWarming = state.apiWarming.filter((readyAt) => readyAt > second);
+    state.apiRunning += ready.length;
+    emit("scaling", `${ready.length} new API ${ready.length === 1 ? "server is" : "servers are"} warm and taking traffic.`, "api");
+  }
+  if (state.workerRestartAt === second && state.workersCrashed > 0) {
+    state.workersCrashed = 0;
+    state.workerRestartAt = undefined;
+    emit("recovery", "The crashed worker restarted.", "worker");
+  }
+  let lostWrites = 0;
+  let lostLinks = 0;
+  let duplicates = 0;
+  const writesNow = creates + edits;
+  const lagFor = (utilization: number) =>
+    database.config.replication === "sync" ? 0 : 0.3 + (3 * Math.max(0, utilization - 0.7)) / 0.3;
+  for (const incident of scenario.incidents ?? []) {
+    if (incident.at !== second) continue;
+    if (incident.type === "api-crash") {
+      const count = Math.min(state.apiRunning, incident.instances ?? 1);
+      state.apiRunning -= count;
+      state.apiCrashed += count;
+      state.crashAt = second;
+      emit("incident", `${count === 1 ? "An API server" : `${count} API servers`} crashed.`, "api");
+    } else if (incident.type === "worker-crash" && worker) {
+      state.workersCrashed = Math.min(worker.config.instances, 1);
+      state.workerRestartAt = second + 5;
+      if (!worker.config.idempotent) duplicates += WORKER_CAPACITY;
+      emit(
+        "incident",
+        worker.config.idempotent
+          ? "A worker crashed mid-batch. Its jobs were redelivered and safely skipped as duplicates."
+          : `A worker crashed mid-batch. ${WORKER_CAPACITY.toLocaleString()} jobs were redelivered and counted twice.`,
+        "worker",
+      );
+    } else if (incident.type === "primary-failure") {
+      state.primary = "down";
+      if (replica) {
+        lostWrites += Math.round(writesNow * lagFor(state.databaseUtilization));
+        state.promoteAt = second + (database.config.failover === "automatic" ? 5 : 40);
+      }
+      emit(
+        "incident",
+        lostWrites > 0
+          ? `The primary database failed. ${lostWrites.toLocaleString()} recent writes had not reached the replica.`
+          : "The primary database failed.",
+        "database",
+      );
+    } else if (incident.type === "table-drop") {
+      const backups = database.config.backups;
+      if (backups === "none") {
+        state.dataLost = true;
+        lostLinks += state.linkRows;
+        emit("incident", "Someone dropped the links table. With no backup, every link is gone.", "database");
+      } else {
+        const restoreSeconds = Math.ceil(state.linkRows / 10_000_000) + (backups === "continuous" ? 5 : 2);
+        state.restoringUntil = second + restoreSeconds;
+        lostLinks += Math.round(
+          params.createsPerStoryHour *
+            (backups === "daily"
+              ? params.backupAgeHours.daily
+              : backups === "hourly"
+                ? params.backupAgeHours.hourly
+                : 1 / 60),
+        );
+        emit(
+          "incident",
+          `Someone dropped the links table, and replicas copied the drop. Restoring from the ${backups} backup takes ${restoreSeconds}s; ${lostLinks.toLocaleString()} links created since then are lost.`,
+          "database",
+        );
+      }
+    } else if (incident.type === "retention-job") {
+      emit(
+        "incident",
+        database.config.partitioning === "monthly"
+          ? "The nightly retention job drops last year's partition in one cheap step."
+          : "The nightly retention job starts deleting old clicks row by row.",
+        "database",
+      );
+    }
+  }
+  if (state.promoteAt === second && state.primary === "down") {
+    state.primary = "promoted";
+    emit("recovery", "A replica was promoted to primary. Writes resume.", "database");
+  }
+  if (state.restoringUntil === second) {
+    state.restoringUntil = undefined;
+    emit("recovery", "The restore finished. The links table is back.", "database");
+  }
+  const restoring = state.restoringUntil !== undefined;
+  const retentionActive = (scenario.incidents ?? []).some(
+    (incident) =>
+      incident.type === "retention-job" && second >= incident.at && second < incident.at + incident.duration,
+  );
+
+  // API pool: without a balancer, clients only ever reach one server.
+  const usesBalancer = Boolean(loadBalancer);
+  const healthChecked =
+    Boolean(loadBalancer?.config.healthChecks) &&
+    state.crashAt !== undefined &&
+    second >= state.crashAt + HEALTH_CHECK_SECONDS;
+  if (loadBalancer?.config.healthChecks && state.crashAt !== undefined && second === state.crashAt + HEALTH_CHECK_SECONDS) {
+    emit("recovery", "Health checks noticed the crashed server and stopped sending it traffic.", "load-balancer");
+  }
+  const reachable = usesBalancer
+    ? state.apiRunning
+    : state.apiCrashed > 0
+      ? 0
+      : Math.min(1, state.apiRunning);
+  const deadShare =
+    usesBalancer && state.apiCrashed > 0 && !healthChecked
+      ? state.apiCrashed / (state.apiRunning + state.apiCrashed)
+      : 0;
+
+  // Rate limiting happens before any application work. With per-server counters, bots that
+  // rotate connections get every server's allowance, while one visitor's burst lands on one server.
+  const limit = api.config.rateLimit;
+  const sharedCounters = limit.counters === "shared" && Boolean(cache);
+  const botScope = sharedCounters ? 1 : Math.max(1, reachable);
+  let botsPassed = bots * params.botRate;
+  let legitRejectedFraction = 0;
+  if (limit.enabled) {
+    if (limit.algorithm === "fixed-window") {
+      // Two windows meet at every boundary, so a client can briefly send twice the limit.
+      botsPassed = bots * Math.min(params.botRate, limit.rate * botScope * 1.5);
+      legitRejectedFraction = params.burstShare * clamp01((params.burstPerClient - limit.rate) / params.burstPerClient);
+    } else {
+      botsPassed = bots * Math.min(params.botRate, limit.rate * botScope);
+      legitRejectedFraction =
+        params.burstShare * clamp01((params.burstPerClient - limit.burst) / params.burstPerClient) +
+        (1 - params.burstShare) * clamp01(1 - limit.rate);
+    }
+  }
+  const keep = 1 - legitRejectedFraction;
+
+  // Live viewers either poll on a timer or hold an open connection.
+  const push = api.config.live.mode === "push";
+  const polls = !push && viewers > 0 ? viewers / Math.max(1, api.config.live.pollSeconds) : 0;
+  const connectionCapacity = reachable * API_CONNECTIONS[api.config.size];
+  const connected = push ? Math.min(viewers, connectionCapacity) : 0;
+
+  const followups = creates * params.followupShare;
+  const legitRequests = (redirects + creates + edits + dashboard + followups) * keep + polls;
+  const apiLoad = (legitRequests + botsPassed) * (1 - deadShare) + connected * 0.02;
+  const apiCapacity = reachable * API_CAPACITY[api.config.size];
+  const apiStage = stage(apiLoad, state.backlog.api, apiCapacity);
+  state.backlog.api = apiStage.backlog;
+  const apiOk = (1 - deadShare) * (1 - apiStage.dropFraction);
+
+  // Sessions kept in one server's memory break once a balancer spreads a user across servers.
+  const sharedSessions = api.config.sessions === "shared" && Boolean(cache);
+  const dashboardServed = dashboard * keep * apiOk;
+  const loggedOut =
+    !sharedSessions && usesBalancer && reachable > 1 ? (dashboardServed * (reachable - 1)) / reachable : 0;
+
+  // Cache: hit rate rises with TTL; synchronized expiry and hot-key refills send bursts of misses.
+  const redirectReads = redirects * keep * apiOk;
+  const hotReads = Math.min(redirectReads, hotKey * keep * apiOk);
+  const normalReads = redirectReads - hotReads;
+  const ttl = cache ? Math.max(1, cache.config.ttlSeconds) : 0;
+  const expiryTick = Boolean(cache) && second > 0 && second % ttl === 0;
+  const massExpiry = expiryTick && !cache?.config.jitter;
+  const hotEvents =
+    (expiryTick ? 1 : 0) +
+    (cache?.config.invalidateOnWrite && params.hotEditEvery > 0 && second > 0 && second % params.hotEditEvery === 0 ? 1 : 0);
+  let hits = 0;
+  let misses = redirectReads;
+  let hotMisses = 0;
+  if (cache) {
+    const hitRate = massExpiry ? 0 : ttl / (ttl + params.reuseSeconds);
+    hotMisses = hotEvents > 0 ? (cache.config.coalesce ? Math.min(hotReads, 1) : Math.min(hotReads, hotReads * 0.4 * hotEvents)) : 0;
+    hits = normalReads * hitRate + hotReads - hotMisses;
+    misses = normalReads * (1 - hitRate) + hotMisses;
+    if (massExpiry && normalReads > 0) {
+      emit("info", "Every cache entry was loaded together, so they all expired together.", "cache");
+    }
+    if (hotMisses > 100) {
+      emit("info", `The viral link's cache entry refreshed: ${Math.round(hotMisses).toLocaleString()} requests missed at once.`, "cache");
+    }
+  }
+  const writes = (creates + edits) * keep * apiOk;
+  const cacheOps = cache
+    ? redirectReads +
+      botsPassed * apiOk +
+      (cache.config.invalidateOnWrite ? writes : 0) +
+      (sharedSessions ? dashboardServed : 0) +
+      (limit.enabled && sharedCounters ? (legitRequests + botsPassed) * apiOk : 0)
+    : 0;
+  const cacheCapacity = cache ? CACHE_CAPACITY[cache.config.size] : 0;
+  const cacheStage = stage(cacheOps, state.backlog.cache, cacheCapacity);
+  state.backlog.cache = cacheStage.backlog;
+  const cacheOk = cache ? 1 - cacheStage.dropFraction : 1;
+  const staleReads =
+    cache && !cache.config.invalidateOnWrite
+      ? Math.min(hits, edits * keep * apiOk * params.staleReadsPerEdit * (Math.min(ttl, 600) / 2))
+      : 0;
+
+  // Background clicks: inline database writes, or a queue drained by workers.
+  const clicks = scenario.clicks ? redirectReads : 0;
+  let workerWrites = 0;
+  let idempotencyReads = 0;
+  let analyticsDelaySeconds = 0;
+  let workerCapacity = 0;
+  if (queue && worker) {
+    const workersUp = Math.max(0, worker.config.instances - state.workersCrashed);
+    state.poisonRetrying = queue.config.deadLetter
+      ? params.poisonPerSecond * 3
+      : state.poisonRetrying + params.poisonPerSecond;
+    workerCapacity = Math.max(0, workersUp * WORKER_CAPACITY - state.poisonRetrying * 20);
+    const available = state.queueBacklog + clicks + params.poisonPerSecond;
+    workerWrites = Math.min(available, workerCapacity);
+    idempotencyReads = worker.config.idempotent ? workerWrites : 0;
+    state.queueBacklog = available - workerWrites;
+  }
+  const inlineClicks = queue ? 0 : clicks;
+
+  // Reads go to replicas when the design routes them there.
+  const primaryUp = state.primary !== "down" && !restoring && !state.dataLost;
+  const replicaInstances = replica
+    ? replica.config.instances - (state.primary === "promoted" ? 1 : 0)
+    : 0;
+  const replicaUp = replicaInstances > 0 && !restoring && !state.dataLost;
+  const lag = replica ? lagFor(state.databaseUtilization) : 0;
+  const archiveShare =
+    archive && database.config.archiveAfter !== "never" ? params.coldReadShare[database.config.archiveAfter] : 0;
+  const archivedReads = misses * archiveShare;
+  const warmMisses = misses - archivedReads;
+  const botReads = botsPassed * apiOk;
+  const dashboardReads = dashboardServed - loggedOut;
+  const followupReads = followups * keep * apiOk;
+  const followupsToReplica = replicaUp && api.config.readAfterWrite === "replica";
+  const replicaReads = replicaUp ? warmMisses + botReads + (followupsToReplica ? followupReads : 0) : 0;
+  const replicaDashboards = replicaUp ? dashboardReads : 0;
+  const primaryReads =
+    warmMisses + botReads + followupReads + archivedReads * 0.1 - replicaReads;
+  const primaryDashboards = dashboardReads - replicaDashboards;
+  const notFound = followupsToReplica ? followupReads * clamp01(lag) : 0;
+
+  // Primary database work, in units of one indexed in-memory read.
+  const shards = Math.max(1, database.config.shards);
+  const keptRows =
+    archive && database.config.archiveAfter !== "never"
+      ? state.linkRows * (1 - params.oldRowShare[database.config.archiveAfter])
+      : state.linkRows;
+  const memoryRows = DB_MEMORY_ROWS[database.config.size] * shards;
+  const fitsInMemory = keptRows <= memoryRows;
+  const readCost = database.config.index ? (fitsInMemory ? 1 : 5) : Math.max(1, keptRows / 100_000);
+  const writeCost = 2 + (database.config.index ? 0.5 : 0);
+  const clickRows = scenario.data.clickRows ?? 0;
+  const dashboardCost =
+    clickRows > 0
+      ? database.config.partitioning === "monthly"
+        ? params.dashboardCost
+        : clickRows > memoryRows
+          ? params.dashboardCost * 5
+          : params.dashboardCost
+      : params.dashboardCost;
+  const scatter = shards > 1 && database.config.shardKey === "hash" ? shards : 1;
+  const readUnits =
+    Math.max(0, primaryReads) * readCost + (idempotencyReads / BATCH_SIZE) * readCost + polls * apiOk * 0.2;
+  // Workers write clicks in batches, so each queued click costs a fraction of an inline insert.
+  const writeUnits = (writes + inlineClicks + workerWrites / BATCH_SIZE) * writeCost;
+  const otherUnits =
+    primaryDashboards * dashboardCost * scatter +
+    (retentionActive ? (database.config.partitioning === "monthly" ? 20 : params.retentionUnits) : 0);
+  const primaryLoad = readUnits + writeUnits + otherUnits;
+  const perShardCapacity =
+    state.primary === "promoted" && replica ? DB_CAPACITY[replica.config.size] : DB_CAPACITY[database.config.size];
+  // A created-at shard key sends every new link, and most reads, to the newest shard.
+  const hottestShardLoad =
+    shards === 1
+      ? primaryLoad
+      : database.config.shardKey === "hash"
+        ? primaryLoad / shards
+        : writeUnits + readUnits * params.recentReadShare + otherUnits / shards;
+  const databaseStage = stage(hottestShardLoad, state.backlog.database, primaryUp ? perShardCapacity : 0);
+  state.backlog.database = databaseStage.backlog;
+  state.databaseUtilization = databaseStage.utilization;
+  const databaseOk = 1 - databaseStage.dropFraction;
+  if (queue && databaseStage.dropFraction > 0) state.queueBacklog += workerWrites * databaseStage.dropFraction;
+  analyticsDelaySeconds = queue ? state.queueBacklog / Math.max(1, Math.min(workerCapacity, clicks + 1)) : 0;
+
+  // Every replica applies every write, so replicas add read capacity but never write capacity.
+  const replicaLoad =
+    replicaReads * readCost + replicaDashboards * dashboardCost + (replicaUp ? writes * replicaInstances : 0);
+  const replicaCapacity = replicaUp ? replicaInstances * DB_CAPACITY[replica!.config.size] : 0;
+  const replicaStage = stage(replicaLoad, state.backlog.replica, replicaCapacity);
+  state.backlog.replica = replicaStage.backlog;
+  const replicaOk = 1 - replicaStage.dropFraction;
+
+  // Successful work, then latency per request class.
+  const missReadOk = (replicaUp ? replicaOk : databaseOk) * cacheOk;
+  const inlineClickOk = inlineClicks > 0 ? databaseOk : 1;
+  const hitsOk = hits * cacheOk * inlineClickOk;
+  const warmMissesOk = warmMisses * missReadOk * inlineClickOk;
+  const archivedOk = archivedReads * databaseOk * inlineClickOk;
+  const followupOk = Math.max(0, followupReads * (followupsToReplica ? replicaOk : databaseOk) - notFound);
+  const writesOk = writes * databaseOk;
+  const dashboardsOk =
+    replicaDashboards * replicaOk + primaryDashboards * databaseOk;
+  const pollsOk = polls * apiOk * databaseOk;
+  const successful = hitsOk + warmMissesOk + archivedOk + followupOk + writesOk + dashboardsOk + pollsOk;
+  const demand = redirects + creates + edits + dashboard + followups + polls;
+  const availability = demand > 0 ? clamp01(successful / demand) : 1;
+
+  const balancerMs = usesBalancer ? 1 : 0;
+  const apiMs = balancerMs + serviceMs(4, apiStage) + (limit.enabled && sharedCounters ? 1 : 0);
+  const cacheMs = cache ? serviceMs(1, cacheStage) : 0;
+  const primaryReadBase = database.config.index ? (fitsInMemory ? 2 : 9) : Math.max(2, (keptRows / 100_000) * 0.4);
+  const primaryReadMs = serviceMs(primaryReadBase, databaseStage);
+  const replicaReadMs = replicaUp ? serviceMs(primaryReadBase, replicaStage) : primaryReadMs;
+  const missReadMs = replicaUp ? replicaReadMs : primaryReadMs;
+  const writeMs = serviceMs(5, databaseStage) + (database.config.replication === "sync" && replica ? 12 : 0);
+  const clickMs = inlineClicks > 0 ? writeMs : queue ? 1 : 0;
+  const classes: LatencyClass[] = [
+    { label: "Cached redirect", volume: hitsOk, latencyMs: apiMs + cacheMs + clickMs },
+    { label: "Database redirect", volume: warmMissesOk, latencyMs: apiMs + cacheMs + missReadMs + clickMs },
+    { label: "Archived redirect", volume: archivedOk, latencyMs: apiMs + cacheMs + primaryReadMs + ARCHIVE_LATENCY_MS + clickMs },
+    { label: "First visit to a new link", volume: followupOk, latencyMs: apiMs + (followupsToReplica ? replicaReadMs : primaryReadMs) },
+    { label: "Create or edit", volume: writesOk, latencyMs: apiMs + writeMs + (cache?.config.invalidateOnWrite ? cacheMs : 0) },
+    {
+      label: "Dashboard",
+      volume: dashboardsOk,
+      latencyMs:
+        apiMs + (sharedSessions ? cacheMs : 0) + (replicaDashboards > 0 ? replicaReadMs : primaryReadMs) * (dashboardCost * scatter) / 2,
+    },
+    { label: "Live poll", volume: pollsOk, latencyMs: apiMs + primaryReadMs * 0.5 },
+  ].map((item) => ({ ...item, latencyMs: Math.min(TIMEOUT_SECONDS * 1000, Math.round(item.latencyMs)) }));
+
+  // Live updates need every server to hear about every click.
+  const servers = Math.max(1, reachable);
+  const missedUpdates = push && viewers > 0 && servers > 1 && !topology.pubsub ? (servers - 1) / servers : 0;
+  const freshnessSeconds =
+    viewers <= 0 ? 0 : push ? (missedUpdates > 0 ? 60 : 0.2) : 0.95 * Math.max(1, api.config.live.pollSeconds);
+  const viewersConnected = viewers <= 0 ? 1 : push ? connected / viewers : clamp01(apiOk * databaseOk);
+
+  // Autoscaling reacts after the fact: new servers need time to warm up.
+  const scaling = api.config.autoscaling;
+  if (scaling.enabled) {
+    const desired = Math.min(
+      scaling.max,
+      Math.max(scaling.min, Math.ceil(apiLoad / (API_CAPACITY[api.config.size] * (scaling.targetUtilization / 100)))),
+    );
+    const pool = state.apiRunning + state.apiWarming.length;
+    if (desired > pool && second - state.lastScaleAt >= 2) {
+      for (let count = pool; count < desired; count += 1) state.apiWarming.push(second + WARMUP_SECONDS);
+      state.lastScaleAt = second;
+      state.lowUtilizationSeconds = 0;
+      emit("scaling", `Autoscaling ordered ${desired - pool} more API ${desired - pool === 1 ? "server" : "servers"}; ready in ${WARMUP_SECONDS}s.`, "api");
+    } else if (desired < state.apiRunning && state.apiWarming.length === 0) {
+      state.lowUtilizationSeconds += 1;
+      if (state.lowUtilizationSeconds >= 8) {
+        state.apiRunning -= 1;
+        state.lowUtilizationSeconds = 0;
+        emit("scaling", "Autoscaling removed an idle API server.", "api");
+      }
+    } else {
+      state.lowUtilizationSeconds = 0;
+    }
+  }
+
+  const nodes: Snapshot["nodes"] = {
+    client: nodeSnapshot(demand + bots * params.botRate, Infinity, stage(0, 0, 1), `${Math.round(demand).toLocaleString()} req/s`),
+    api: nodeSnapshot(apiLoad, apiCapacity, apiStage, `${reachable} of ${state.apiRunning + state.apiCrashed} servers reachable`),
+    database: nodeSnapshot(
+      hottestShardLoad,
+      primaryUp ? perShardCapacity : 0,
+      databaseStage,
+      !primaryUp
+        ? restoring
+          ? "Restoring from backup"
+          : state.dataLost
+            ? "Data lost"
+            : "Down"
+        : `${fitsInMemory ? "Fits in memory" : "Spills to disk"} · read cost ${readCost.toFixed(1)}`,
     ),
   };
-}
-
-function pathNetworkFromNode(
-  architecture: Architecture,
-  nodeId: string,
-  affectedRegions: Set<Region>,
-  visited = new Set<string>(),
-): Array<{ share: number; latencyMs: number; affected: boolean }> {
-  if (visited.has(nodeId)) return [];
-  const outgoing = architecture.edges.filter((edge) => edge.source === nodeId);
-  if (outgoing.length === 0) return [{ share: 1, latencyMs: 0, affected: false }];
-  const source = architecture.nodes.find((node) => node.id === nodeId)!;
-  const totalWeight = outgoing.reduce((sum, edge) => sum + edge.weight, 0);
-  const nextVisited = new Set(visited).add(nodeId);
-  return outgoing.flatMap((edge) => {
-    const target = architecture.nodes.find((node) => node.id === edge.target)!;
-    const edgeAffected =
-      affectedRegions.has(source.config.region) || affectedRegions.has(target.config.region);
-    const edgeLatency = networkLatencyBetween(
-      source.config.region,
-      target.config.region,
-      affectedRegions,
+  if (loadBalancer) {
+    nodes["load-balancer"] = nodeSnapshot(apiLoad, 50_000, stage(apiLoad, 0, 50_000), deadShare > 0 ? "Sending traffic to a dead server" : "Spreading traffic");
+  }
+  if (cache) {
+    nodes.cache = nodeSnapshot(cacheOps, cacheCapacity, cacheStage, `${Math.round((redirectReads > 0 ? hits / redirectReads : 0) * 100)}% hit rate`);
+  }
+  if (replica) {
+    nodes.replica = nodeSnapshot(replicaLoad, replicaCapacity, replicaStage, replicaUp ? `${lag.toFixed(1)}s behind` : "Unavailable");
+  }
+  if (queue && worker) {
+    const queueStage: Stage = { backlog: state.queueBacklog, dropFraction: 0, utilization: state.queueBacklog > 0 ? 1 : 0.1, waitMs: 0 };
+    nodes.queue = nodeSnapshot(clicks, Infinity, queueStage, `${Math.round(state.queueBacklog).toLocaleString()} jobs waiting`);
+    nodes.worker = nodeSnapshot(
+      clicks + state.poisonRetrying * 20,
+      Math.max(0, worker.config.instances - state.workersCrashed) * WORKER_CAPACITY,
+      stage(clicks + state.poisonRetrying * 20, 0, Math.max(1, workerCapacity)),
+      state.poisonRetrying > 0 ? `${Math.round(state.poisonRetrying)} poison jobs retrying` : `${Math.round(workerWrites).toLocaleString()} jobs/s`,
     );
-    return pathNetworkFromNode(architecture, edge.target, affectedRegions, nextVisited).map(
-      (path) => ({
-        share: (edge.weight / totalWeight) * path.share,
-        latencyMs: edgeLatency + path.latencyMs,
-        affected: edgeAffected || path.affected,
-      }),
-    );
-  });
-}
+  }
+  if (topology.pubsub) nodes.pubsub = nodeSnapshot(viewers > 0 ? clicks : 0, 200_000, stage(0, 0, 1), "Fanning out updates");
+  if (archive) nodes.archive = nodeSnapshot(archivedReads, Infinity, stage(0, 0, 1), `${Math.round(archivedReads).toLocaleString()} reads/s`);
 
-function networkLatencyBetween(source: Region, target: Region, affectedRegions: Set<Region>) {
-  const baseLatency = REGION_LATENCY_MS[source][target];
-  return baseLatency + (affectedRegions.has(source) || affectedRegions.has(target) ? 120 : 0);
-}
+  for (const [type, snapshot] of Object.entries(nodes) as Array<[NodeType, NodeSnapshot]>) {
+    const saturated = snapshot.health === "saturated" || snapshot.health === "failed";
+    if (saturated && !state.saturated.has(type)) {
+      state.saturated.add(type);
+      emit("saturation", `${nodeCatalog[type].label} ${snapshot.health === "failed" ? "is failing every request" : "is at capacity: work is queueing"}.`, type);
+    } else if (!saturated && state.saturated.has(type)) {
+      state.saturated.delete(type);
+      emit("recovery", `${nodeCatalog[type].label} has headroom again.`, type);
+    }
+  }
 
-const REGION_LATENCY_MS: Record<Region, Record<Region, number>> = {
-  "us-east": { "us-east": 2, "us-west": 72, "eu-west": 82, "ap-south": 185 },
-  "us-west": { "us-east": 72, "us-west": 2, "eu-west": 145, "ap-south": 225 },
-  "eu-west": { "us-east": 82, "us-west": 145, "eu-west": 2, "ap-south": 130 },
-  "ap-south": { "us-east": 185, "us-west": 225, "eu-west": 130, "ap-south": 2 },
-};
-
-function trafficShareReachingNode(architecture: Architecture, targetId: string) {
-  const clients = architecture.nodes.filter((node) => node.type === "client");
-  if (clients.length === 0) return 0;
-  return (
-    clients.reduce(
-      (share, client) => share + trafficShareBetweenNodes(architecture, client.id, targetId),
-      0,
-    ) / clients.length
-  );
-}
-
-function trafficShareBetweenNodes(
-  architecture: Architecture,
-  sourceId: string,
-  targetId: string,
-  visited = new Set<string>(),
-): number {
-  if (sourceId === targetId) return 1;
-  if (visited.has(sourceId)) return 0;
-  const outgoing = architecture.edges.filter((edge) => edge.source === sourceId);
-  if (outgoing.length === 0) return 0;
-  const totalWeight = outgoing.reduce((sum, edge) => sum + edge.weight, 0);
-  const nextVisited = new Set(visited).add(sourceId);
-  return outgoing.reduce(
-    (share, edge) =>
-      share +
-      (edge.weight / totalWeight) *
-        trafficShareBetweenNodes(architecture, edge.target, targetId, nextVisited),
+  state.linkRows += scenario.data.linkRowsPerSecond ?? 0;
+  // Every building is billed, including ones that are not on a request path.
+  const monthlyCost = billed.reduce(
+    (total, node) =>
+      total +
+      (node.type === "api"
+        ? nodeMonthlyCost(node, state.apiRunning + state.apiWarming.length + state.apiCrashed)
+        : nodeMonthlyCost(node)),
     0,
   );
-}
 
-function descendantNodeIds(architecture: Architecture, sourceId: string) {
-  const descendants = new Set<string>();
-  const pending = architecture.edges
-    .filter((edge) => edge.source === sourceId)
-    .map((edge) => edge.target);
-  while (pending.length > 0) {
-    const nodeId = pending.shift()!;
-    if (descendants.has(nodeId)) continue;
-    descendants.add(nodeId);
-    pending.push(
-      ...architecture.edges.filter((edge) => edge.source === nodeId).map((edge) => edge.target),
-    );
-  }
-  return descendants;
-}
-
-function routedCapacityFromNode(
-  architecture: Architecture,
-  nodeId: string,
-  activeReplicas?: Record<string, number>,
-  visited = new Set<string>(),
-): number {
-  return routedCapacityWith(
-    architecture,
-    nodeId,
-    (node) =>
-      node.type === "worker"
-        ? effectiveCapacity(
-            node,
-            node.config.serviceTimeMs,
-            activeReplicas?.[node.id] ?? node.config.replicas,
-          )
-        : Number.POSITIVE_INFINITY,
-    visited,
-  );
-}
-
-function routedCapacityWith(
-  architecture: Architecture,
-  nodeId: string,
-  capacityFor: (node: Architecture["nodes"][number]) => number,
-  visited = new Set<string>(),
-): number {
-  if (visited.has(nodeId)) return 0;
-  const node = architecture.nodes.find((candidate) => candidate.id === nodeId);
-  if (!node) return 0;
-  const ownCapacity = capacityFor(node);
-  const outgoing = architecture.edges.filter((edge) => edge.source === nodeId);
-  if (outgoing.length === 0) return ownCapacity;
-
-  const nextVisited = new Set(visited).add(nodeId);
-  const totalWeight = outgoing.reduce((sum, edge) => sum + edge.weight, 0);
-  const downstreamCapacity = Math.min(
-    ...outgoing.map((edge) => {
-      const routeShare = edge.weight / totalWeight;
-      return routedCapacityWith(architecture, edge.target, capacityFor, nextVisited) / routeShare;
-    }),
-  );
-  return Math.min(ownCapacity, downstreamCapacity);
-}
-
-function reachableNodeIds(architecture: Architecture) {
-  const reachable = new Set(
-    architecture.nodes.filter((node) => node.type === "client").map((node) => node.id),
-  );
-  const queue = [...reachable];
-  while (queue.length > 0) {
-    const source = queue.shift()!;
-    for (const edge of architecture.edges.filter((candidate) => candidate.source === source)) {
-      if (reachable.has(edge.target)) continue;
-      reachable.add(edge.target);
-      queue.push(edge.target);
-    }
-  }
-  return reachable;
-}
-
-export function explainFailure(result: SimulationResult): FailureReport | null {
-  if (result.outcome !== "failed" || result.snapshots.length === 0) return null;
-  const firstBreachSecond = result.events.find((event) => event.type === "slo-breach")?.second;
-  const frozen =
-    result.snapshots.find((snapshot) => snapshot.second === firstBreachSecond) ??
-    result.snapshots.at(-1)!;
-  const before = result.snapshots[0]!;
   return {
-    frozenAtSecond: frozen.second,
-    firstSaturatedNodeId: result.firstSaturatedNodeId,
-    queueGrowth: frozen.queued - before.queued,
-    propagatedLatencyMs: frozen.p95LatencyMs - before.p95LatencyMs,
-    successfulTraffic: frozen.successful,
-    dropped: frozen.dropped,
-    timedOut: frozen.timedOut,
-    cause:
-      frozen.timedOut > 0
-        ? "Work waited beyond the timeout while the saturated path drained its queue."
-        : frozen.dropped > 0
-          ? "Demand exceeded the finite queue budget after the saturated path filled."
-          : "Demand exceeded the first saturated component’s finite capacity and accumulated in its queue.",
+    second,
+    demand: Math.round(demand),
+    successful: Math.round(successful),
+    availability,
+    p95Ms: percentile(classes, 0.95),
+    monthlyCost,
+    classes,
+    nodes,
+    cacheHitRate: redirectReads > 0 ? hits / redirectReads : 0,
+    staleReads,
+    notFound,
+    lostWrites,
+    lostLinks,
+    duplicates,
+    loggedOut,
+    legitRejected: (redirects + creates + edits + dashboard + followups) * legitRejectedFraction,
+    botsPassed,
+    viewers,
+    viewersConnected,
+    freshnessSeconds,
+    missedUpdates,
+    queueBacklog: Math.round(state.queueBacklog),
+    analyticsDelaySeconds,
+    apiInstances: { running: state.apiRunning, warming: state.apiWarming.length, crashed: state.apiCrashed },
+    replicaLagSeconds: lag,
+  };
+}
+
+export function summarize(snapshots: Snapshot[], events: SimEvent[]): Totals {
+  const sum = (pick: (snapshot: Snapshot) => number) =>
+    snapshots.reduce((total, snapshot) => total + pick(snapshot), 0);
+  const max = (pick: (snapshot: Snapshot) => number) =>
+    snapshots.reduce((total, snapshot) => Math.max(total, pick(snapshot)), 0);
+  const demand = sum((snapshot) => snapshot.demand);
+  const successful = sum((snapshot) => snapshot.successful);
+  const firstSaturation = events.find((event) => event.kind === "saturation" && event.node);
+  const viewing = snapshots.filter((snapshot) => snapshot.viewers > 0);
+  return {
+    demand,
+    successful,
+    availability: demand > 0 ? successful / demand : 1,
+    p95Ms: percentile(snapshots.flatMap((snapshot) => snapshot.classes), 0.95),
+    averageMonthlyCost: snapshots.length ? sum((snapshot) => snapshot.monthlyCost) / snapshots.length : 0,
+    staleReads: Math.round(sum((snapshot) => snapshot.staleReads)),
+    notFound: Math.round(sum((snapshot) => snapshot.notFound)),
+    lostWrites: Math.round(sum((snapshot) => snapshot.lostWrites)),
+    lostLinks: Math.round(sum((snapshot) => snapshot.lostLinks)),
+    duplicates: Math.round(sum((snapshot) => snapshot.duplicates)),
+    loggedOut: Math.round(sum((snapshot) => snapshot.loggedOut)),
+    legitRejected: Math.round(sum((snapshot) => snapshot.legitRejected)),
+    peakBotsPassed: Math.round(max((snapshot) => snapshot.botsPassed)),
+    minViewersConnected: viewing.length
+      ? Math.min(...viewing.map((snapshot) => snapshot.viewersConnected))
+      : 1,
+    maxFreshnessSeconds: max((snapshot) => snapshot.freshnessSeconds),
+    maxMissedUpdates: max((snapshot) => snapshot.missedUpdates),
+    maxAnalyticsDelaySeconds: max((snapshot) => snapshot.analyticsDelaySeconds),
+    finalBacklog: snapshots.at(-1)?.queueBacklog ?? 0,
+    firstSaturated:
+      firstSaturation?.node && firstSaturation.node !== "client"
+        ? { node: firstSaturation.node, second: firstSaturation.second }
+        : undefined,
   };
 }
