@@ -1,0 +1,107 @@
+:root {
+  --park-ink: #20342f;
+  --park-soft: #587067;
+  --park-cream: #fff9e9;
+  --park-paper: #fffdf5;
+  --park-sky: #bfe5ee;
+  --park-lawn: #9fd276;
+  --park-coral: #ef6f5e;
+  --park-yellow: #f5c954;
+  --park-line: #27473d;
+  --park-display: "Bricolage Grotesque", sans-serif;
+  --park-body: "Nunito Sans", sans-serif;
+  --mono: "DM Mono", monospace;
+  color-scheme: light;
+}
+
+*,
+::before,
+::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0 solid;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  line-height: 1.5;
+}
+
+body {
+  min-width: 320px;
+  overflow-x: hidden;
+  background: var(--park-sky);
+  color: var(--park-ink);
+  font-family: var(--park-body);
+}
+
+h1,
+h2,
+h3 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+ol,
+ul {
+  list-style: none;
+}
+
+svg {
+  display: block;
+  vertical-align: middle;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+select {
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+button {
+  background: transparent;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.app-shell {
+  min-height: 100svh;
+}
+
+.route-error {
+  min-height: 100svh;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.route-error h1 {
+  font-family: var(--park-display);
+  font-size: clamp(32px, 6vw, 56px);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.route-error a {
+  font-weight: 800;
+}

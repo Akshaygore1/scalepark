@@ -1,20 +1,19 @@
-import { TycoonGame } from "@/components/tycoon-game";
-import { gameLevelById } from "@/lib/game";
 import { useEffect } from "react";
 import { Navigate, useParams } from "react-router";
 
-export default function GameLevel() {
-  const { level: levelId } = useParams();
-  const level = levelId ? gameLevelById(levelId) : undefined;
-  if (!level) {
-    return <Navigate replace to="/" />;
-  }
-  return <GameLevelContent levelId={level.id} levelName={level.name} />;
-}
+import { GameScreen } from "@/components/game/game-screen";
+import { useProgress } from "@/components/progress-store";
+import { QuizScreen } from "@/components/quiz-screen";
+import { levelById } from "@/lib/curriculum";
+import { isUnlocked } from "@/lib/progress";
 
-function GameLevelContent({ levelId, levelName }: { levelId: string; levelName: string }) {
+export default function GameLevel() {
+  const { level: levelId = "" } = useParams();
+  const progress = useProgress();
+  const level = levelById(levelId);
   useEffect(() => {
-    document.title = `${levelName} — ScaleLab Park`;
-  }, [levelName]);
-  return <TycoonGame levelId={levelId} />;
+    if (level) document.title = `${level.title} · ScaleLab Park`;
+  }, [level]);
+  if (!level || !isUnlocked(progress, level.id)) return <Navigate replace to="/" />;
+  return level.kind === "quiz" ? <QuizScreen key={level.id} level={level} /> : <GameScreen key={level.id} level={level} />;
 }

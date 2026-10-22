@@ -6,7 +6,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router";
 
-import "./index.css";
+import "./styles/base.css";
+import "./styles/menu.css";
+import "./styles/game.css";
+import "./styles/dialogs.css";
+import "./styles/review.css";
 import { router } from "./router";
 
 const root = document.getElementById("root");
