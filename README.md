@@ -4,7 +4,7 @@
 
 ScaleLab Park is a browser-based system-design game. You build and operate a link shortener as a little technology park: place buildings, route traffic between them, run the park, and watch where it struggles.
 
-The campaign follows Part 1 of the [sys0 system design path](https://sys0.in/path), one idea at a time, from requirements to a full design on a blank page.
+The campaign teaches system design one idea at a time, from requirements to a full design on a blank page.
 
 ## How a level works
 
