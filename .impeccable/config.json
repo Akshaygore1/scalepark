@@ -1,0 +1,26 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "border-accent-on-rounded",
+        "value": "*",
+        "files": [
+          "src/styles/game.css"
+        ],
+        "createdAt": "2026-10-23T19:18:17.455Z",
+        "reason": "Agent: .park-hills draws literal curved landscape scenery with an outline, not a rounded card; unchanged from HEAD."
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "src/styles/game.css"
+        ],
+        "createdAt": "2026-10-23T19:18:17.510Z",
+        "reason": "Agent: after removing the inspector side stripe, the remaining finding is .park-road inset shading that draws literal road edges in the park map, not a card accent."
+      }
+    ]
+  }
+}

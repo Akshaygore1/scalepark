@@ -66,6 +66,16 @@ export const capstone: CurriculumModule = {
         { kind: "budget", maxMonthly: 1_800 },
       ],
       par: { monthly: 1_700, complexity: 9 },
+      finalHint: [
+        "Build a load balancer, API server, database, cache, message queue, workers, and pub/sub broker.",
+        "API: Server size L, Servers 5, Login sessions Shared cache, Reads after a create Primary, and Live updates Push (open connection). Leave Autoscaling off.",
+        "API rate limiter: Rate limit each client on, Algorithm Token bucket, Refill per second 3, Bucket size 10, Counters Shared cache.",
+        "Load balancer: Health checks on. Database: size M, Index on short code on, and Shards 1.",
+        "Cache: size S, Time to live 120 s, Invalidate on write on, Request coalescing on, and TTL jitter on.",
+        "Message queue: Dead-letter queue on. Workers: 8, with Idempotent jobs on.",
+        "Connect Clients → Load balancer → API server. Connect API server → Database, API server → Cache, and API server → Pub/sub broker.",
+        "Also connect API server → Message queue → Workers → Database. Keep all other settings at their defaults.",
+      ],
       hints: [
         "Run the simplest design first and read which target fails.",
         "Each target maps to a module: latency to caching and scaling, live counters to push and pub/sub, clicks to queues, bots to rate limits.",

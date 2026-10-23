@@ -45,6 +45,10 @@ export const scalingServers: CurriculumModule = {
         { kind: "budget", maxMonthly: 400 },
       ],
       par: { monthly: 380, complexity: 3 },
+      finalHint: [
+        "Select the API server and set Server size to L.",
+        "Keep the M database and S cache, with Time to live at 120 s and all existing routes.",
+      ],
       hints: [
         "Latency climbs with traffic, and the API server is the busy one.",
         "One small API server cannot finish that much work per second.",
@@ -98,6 +102,12 @@ export const scalingServers: CurriculumModule = {
         { kind: "budget", maxMonthly: 850 },
       ],
       par: { monthly: 800, complexity: 4 },
+      finalHint: [
+        "On the existing API building, set Server size to L, Servers to 3, and Login sessions to Shared cache. The Servers setting represents the whole pool.",
+        "Build a load balancer. Connect Clients → Load balancer → API server. Remove the direct Clients → API server route.",
+        "Keep API server → Database and API server → Cache connected.",
+        "Keep database size M, cache size S, and Time to live at 120 s.",
+      ],
       hints: [
         "The API server is at its largest size and still saturated.",
         "You need more than one server, and something to spread traffic between them.",
@@ -153,6 +163,11 @@ export const scalingServers: CurriculumModule = {
         { kind: "budget", maxMonthly: 1_000 },
       ],
       par: { monthly: 1_000, complexity: 4 },
+      finalHint: [
+        "Select the load balancer and turn on Health checks.",
+        "On the API, keep Server size L and Login sessions Shared cache, and raise Servers to 4.",
+        "Keep the M database, S cache, Time to live 120 s, and existing routes through the load balancer.",
+      ],
       hints: [
         "Everything is fine until a server crashes, then errors pour in.",
         "The load balancer keeps sending traffic to the dead server, and the others are already full.",
@@ -211,6 +226,12 @@ export const scalingServers: CurriculumModule = {
         { kind: "budget", maxMonthly: 850 },
       ],
       par: { monthly: 840, complexity: 5 },
+      finalHint: [
+        "On the API, keep Server size L and Servers 1, then turn on Autoscaling.",
+        "Set Minimum to 1, Maximum to 4, and Target busy to 50%.",
+        "Keep Login sessions at Shared cache, load balancer Health checks on, database size M, and cache Time to live at 120 s.",
+        "Keep all existing routes.",
+      ],
       hints: [
         "One server is fine at night and overwhelmed at lunch; four servers all day blow the budget.",
         "Capacity needs to follow the daily curve.",

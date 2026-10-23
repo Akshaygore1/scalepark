@@ -56,6 +56,11 @@ export const growingBig: CurriculumModule = {
         { kind: "budget", maxMonthly: 1_100 },
       ],
       par: { monthly: 1_040, complexity: 5 },
+      finalHint: [
+        "Build archive storage and connect Database → Archive storage.",
+        "On the database, set Archive links older than to 1 year.",
+        "Keep the L database, three L API servers, S cache, Time to live 120 s, and existing routes.",
+      ],
       hints: [
         "The database is saturated even though traffic has not changed much.",
         "The table is bigger than the database's memory, so reads spill to disk.",
@@ -105,6 +110,10 @@ export const growingBig: CurriculumModule = {
         { kind: "budget", maxMonthly: 1_100 },
       ],
       par: { monthly: 1_030, complexity: 5 },
+      finalHint: [
+        "On the database, set Clicks table to Partitioned by month.",
+        "Keep the L database, three L API servers, S cache, and all existing routes.",
+      ],
       hints: [
         "Dashboards are slow all the time, and everything collapses when the cleanup job starts.",
         "Every dashboard query scans the whole clicks table, and the cleanup deletes rows one at a time.",
@@ -159,6 +168,10 @@ export const growingBig: CurriculumModule = {
         { kind: "budget", maxMonthly: 2_200 },
       ],
       par: { monthly: 2_190, complexity: 11 },
+      finalHint: [
+        "On the database, set Database size to L, Shards to 3, and Shard key to Hash of the code.",
+        "Keep five L API servers, the S cache with Time to live 120 s and Invalidate on write on, and all existing routes.",
+      ],
       hints: [
         "The database falls over as soon as the bulk creates begin.",
         "Writes alone exceed what any single database can handle.",

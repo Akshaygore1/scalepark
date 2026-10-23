@@ -61,6 +61,11 @@ export const scalingDatabases: CurriculumModule = {
         { kind: "budget", maxMonthly: 800 },
       ],
       par: { monthly: 780, complexity: 5 },
+      finalHint: [
+        "Build a read replica. Set Replica size to S and Replicas to 3.",
+        "Connect API server → Read replica and Database → Read replica.",
+        "Keep the existing two L API servers, M primary database, S cache, and other routes.",
+      ],
       hints: [
         "The database is saturated, and the cache's hit rate is already high.",
         "Dashboard reads are personal, so they skip the cache and all land on the primary.",
@@ -110,6 +115,10 @@ export const scalingDatabases: CurriculumModule = {
         { kind: "budget", maxMonthly: 920 },
       ],
       par: { monthly: 900, complexity: 5 },
+      finalHint: [
+        "On the API, set Reads after a create to Primary.",
+        "Keep two L API servers, the M primary database, two M replicas, and all existing cache and replication routes.",
+      ],
       hints: [
         "Some people get 404s for links that definitely exist.",
         "Their first visit is served by the replica before the new link has been copied to it.",
@@ -176,6 +185,11 @@ export const scalingDatabases: CurriculumModule = {
         { kind: "budget", maxMonthly: 1_070 },
       ],
       par: { monthly: 1_050, complexity: 5 },
+      finalHint: [
+        "On the database, set Replication to Synchronous and Failover to Automatic (5s).",
+        "On the read replica, keep Replica size M and raise Replicas to 3.",
+        "Keep two L API servers and Reads after a create set to Primary. Keep all existing routes.",
+      ],
       hints: [
         "After the primary fails, writes stop for a long time, and some confirmed links vanish.",
         "Failover is manual, replication is asynchronous, and there is only one replica.",
@@ -232,6 +246,10 @@ export const scalingDatabases: CurriculumModule = {
         { kind: "budget", maxMonthly: 1_000 },
       ],
       par: { monthly: 950, complexity: 5 },
+      finalHint: [
+        "On the database, set Backups to Hourly.",
+        "Keep the M primary database, one M replica, two L API servers, S cache, and all existing routes.",
+      ],
       hints: [
         "When the table disappears, the replica loses it too, and nothing can bring it back.",
         "Replication copied the mistake. You need a copy from before the mistake.",

@@ -55,6 +55,11 @@ export const distributedProblems: CurriculumModule = {
         { kind: "budget", maxMonthly: 600 },
       ],
       par: { monthly: 490, complexity: 2 },
+      finalHint: [
+        "Select the service that runs Links and Accounts and open its Routes out section.",
+        "On the route to Billing, keep Call at Wait for the answer, set Timeout to 500 ms, and turn on Fallback on failure.",
+        "Keep the entry service at L with 2 instances, Billing at M with 1 instance, and all existing routes.",
+      ],
       hints: [
         "When billing hangs, the app runs out of threads, so redirects are turned away too.",
         "Dashboard requests wait on billing forever, and each one holds an app thread while it waits.",
@@ -109,6 +114,11 @@ export const distributedProblems: CurriculumModule = {
         { kind: "budget", maxMonthly: 900 },
       ],
       par: { monthly: 800, complexity: 2 },
+      finalHint: [
+        "Select the Accounts service and open its Routes out section.",
+        "On the route to Links, keep Timeout at 300 ms and Retries at 3. Turn on Backoff with jitter and Circuit breaker.",
+        "Keep Accounts at L with 2 instances, Links at M with 3 instances, and all existing routes.",
+      ],
       hints: [
         "Links comes back after 3 seconds, but stays overloaded until the end of the run.",
         "Every failed call is retried three times at once, so links gets four times its normal traffic the moment it returns.",
@@ -168,6 +178,11 @@ export const distributedProblems: CurriculumModule = {
         { kind: "budget", maxMonthly: 900 },
       ],
       par: { monthly: 870, complexity: 3 },
+      finalHint: [
+        "Select the Analytics service and set Counter rows to 4.",
+        "Keep Links at L with 3 instances and Analytics at M with 3 instances.",
+        "Keep Clients → Links service → Analytics service connected, with the Analytics route set to Send a message (queued).",
+      ],
       hints: [
         "Analytics has spare servers, yet clicks wait longer and longer during the spike.",
         "Every click updates the same counter row, which takes about 1,000 writes per second.",
@@ -225,6 +240,11 @@ export const distributedProblems: CurriculumModule = {
         { kind: "availability", min: 0.995 },
       ],
       par: { monthly: 440, complexity: 2 },
+      finalHint: [
+        "On the Alias locks service, set Lock lease to 2 s.",
+        "On the Links service, turn on Check fencing tokens.",
+        "Keep Links at L with 2 instances and Alias locks at S with 1 instance. Keep the existing route to Alias locks with Timeout 200 ms.",
+      ],
       hints: [
         "After the crash, popular aliases stay locked for a long time, and claims for them fail.",
         "The lease is long enough to outlast the pause, so it also outlasts a crashed holder. A shorter lease lets the paused server's lock expire.",

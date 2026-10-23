@@ -5,7 +5,6 @@ import {
   CircleCheck,
   CircleDashed,
   CircleX,
-  Download,
   Gauge,
   Lightbulb,
   Pause,
@@ -15,7 +14,6 @@ import {
   Shapes,
   ShieldCheck,
   Square,
-  Upload,
   Users,
   Zap,
 } from "lucide-react";
@@ -52,8 +50,6 @@ export function GameHud({
   onHint,
   onToggleHint,
   onJournal,
-  onExport,
-  onImport,
   onReset,
 }: {
   level: SimLevel;
@@ -77,8 +73,6 @@ export function GameHud({
   onHint: () => void;
   onToggleHint: () => void;
   onJournal: () => void;
-  onExport: () => void;
-  onImport: () => void;
   onReset: () => void;
 }) {
   const running = phase === "running";
@@ -143,22 +137,27 @@ export function GameHud({
                 </li>
               ))}
             </ol>
-            {hintsShown < 3 && (
+            {hintsShown < hints.length && (
               <button className="hint-more" type="button" onClick={onHint}>
                 {["Show a hint", "Where should I look?", "What should I try?"][hintsShown]}
               </button>
+            )}
+            {hintsShown >= hints.length && level.finalHint.length > 0 && (
+              <details className="hint-solution">
+                <summary className="hint-more">Show exact configuration</summary>
+                <p>Start from Reset park, then follow these steps. Leave unlisted settings unchanged.</p>
+                <ol aria-label="Exact configuration">
+                  {level.finalHint.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+              </details>
             )}
           </section>
         </div>
       )}
       <button className="journal-button" type="button" onClick={onJournal} aria-label="System design journal" title="Journal">
         <BookOpen />
-      </button>
-      <button className="journal-button" type="button" onClick={onExport} aria-label="Export park" title="Export park">
-        <Download />
-      </button>
-      <button className="journal-button" type="button" onClick={onImport} aria-label="Import park" title="Import park">
-        <Upload />
       </button>
       <button className="journal-button" type="button" onClick={onReset} aria-label="Reset to the starting park" title="Reset park">
         <RotateCcw />

@@ -46,6 +46,11 @@ export const rateLimiting: CurriculumModule = {
         { kind: "budget", maxMonthly: 400 },
       ],
       par: { monthly: 380, complexity: 3 },
+      finalHint: [
+        "On the API, turn on Rate limit each client and set Algorithm to Token bucket.",
+        "Set Refill per second to 3, Bucket size to 10, and Counters to Each server.",
+        "Keep the single L API server, M database, S cache, Time to live 120 s, and existing routes.",
+      ],
       hints: [
         "Bot requests eat the API server and the database, and real visitors time out.",
         "The limit must catch steady bots but let a real visitor's 8 quick clicks through.",
@@ -106,6 +111,11 @@ export const rateLimiting: CurriculumModule = {
         { kind: "budget", maxMonthly: 650 },
       ],
       par: { monthly: 620, complexity: 4 },
+      finalHint: [
+        "On the API's rate limiter, set Counters to Shared cache.",
+        "Keep Rate limit each client on, Algorithm Token bucket, Refill per second 3, and Bucket size 10.",
+        "Keep four M API servers, the M database, S cache, and all existing routes, including API server → Cache.",
+      ],
       hints: [
         "The same limit lets four times as many bot requests through.",
         "Each server keeps its own count, and bots spread out across all of them.",

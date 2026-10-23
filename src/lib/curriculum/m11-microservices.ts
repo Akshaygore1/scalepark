@@ -50,6 +50,12 @@ export const microservices: CurriculumModule = {
         { kind: "budget", maxMonthly: 650 },
       ],
       par: { monthly: 600, complexity: 3 },
+      finalHint: [
+        "On the existing service, turn Analytics off. Keep Links on, set Instance size to L, and Instances to 2.",
+        "Build a second service with only Analytics on, Instance size M, and Instances 2.",
+        "Keep Clients connected to the Links service. Connect Links service → Analytics service.",
+        "In the Links service's Routes out section, set the Analytics route's Call to Send a message (queued).",
+      ],
       hints: [
         "When the analytics deploy crashes, the whole app crashes with it, redirects included.",
         "Analytics runs in the same service as links, so it shares its fate.",
@@ -108,6 +114,12 @@ export const microservices: CurriculumModule = {
         { kind: "budget", maxMonthly: 550 },
       ],
       par: { monthly: 490, complexity: 3 },
+      finalHint: [
+        "Turn Links, Link safety, and Geo lookup off in their separate services, then turn all three on in the service connected to Clients.",
+        "Set that entry service's Instance size to L and Instances to 2.",
+        "Keep Analytics in its own service at size M with 1 instance. Remove the three services whose capabilities you moved.",
+        "Keep Clients → Entry service → Analytics service connected. In the entry service's Routes out section, set the Analytics route's Call to Send a message (queued).",
+      ],
       hints: [
         "Every service is healthy, but redirects are slow and the park costs too much.",
         "A redirect waits on three network calls in a row: links, link safety, and geo lookup.",

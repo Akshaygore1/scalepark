@@ -45,6 +45,10 @@ export const simpleSystem: CurriculumModule = {
         { kind: "budget", maxMonthly: 150 },
       ],
       par: { monthly: 100, complexity: 2 },
+      finalHint: [
+        "Build one API server and one database. Keep both at their default size S.",
+        "Connect Clients → API server, then API server → Database.",
+      ],
       hints: [
         "Requests from the clients have nowhere to go yet.",
         "You need something to run the code and something to store the links.",
@@ -153,6 +157,10 @@ export const simpleSystem: CurriculumModule = {
         { kind: "budget", maxMonthly: 150 },
       ],
       par: { monthly: 100, complexity: 2 },
+      finalHint: [
+        "Select the database and turn on Index on short code.",
+        "Keep the API and database at size S, with Clients → API server → Database connected.",
+      ],
       hints: [
         "The database works harder every day, even though traffic barely grows.",
         "Look at the database's read cost: it rises with the number of rows.",

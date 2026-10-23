@@ -63,6 +63,12 @@ export const backgroundJobs: CurriculumModule = {
         { kind: "budget", maxMonthly: 900 },
       ],
       par: { monthly: 875, complexity: 6 },
+      finalHint: [
+        "Build a message queue and a worker building. Set Workers to 5.",
+        "Connect API server → Message queue → Workers → Database.",
+        "Keep the direct API server → Database route as well as the cache and load balancer routes.",
+        "Keep two L API servers, the M database, and S cache with Time to live 120 s and Invalidate on write on.",
+      ],
       hints: [
         "Redirects are slow because each one waits for a database write.",
         "Click recording does not need to happen before the visitor is redirected.",
@@ -117,6 +123,11 @@ export const backgroundJobs: CurriculumModule = {
         { kind: "budget", maxMonthly: 900 },
       ],
       par: { monthly: 875, complexity: 6 },
+      finalHint: [
+        "On the message queue, turn on Dead-letter queue.",
+        "On the workers, turn on Idempotent jobs and keep Workers at 5.",
+        "Keep two L API servers, the M database, S cache, and all existing routes, including API server → Message queue → Workers → Database.",
+      ],
       hints: [
         "Click counts come out too high after the crash, and the queue slowly stops draining.",
         "Redelivered jobs are processed again, and a few broken jobs are retried forever.",

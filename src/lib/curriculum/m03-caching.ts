@@ -45,6 +45,11 @@ export const caching: CurriculumModule = {
         { kind: "budget", maxMonthly: 650 },
       ],
       par: { monthly: 630, complexity: 3 },
+      finalHint: [
+        "Build a cache and connect API server → Cache.",
+        "Set the cache's Time to live to 120 s. Keep its default size S.",
+        "Keep the existing XL API server, M database, and their routes.",
+      ],
       hints: [
         "Redirects slow down as traffic climbs, while the API server still has room.",
         "The database answers the same popular lookups over and over.",
@@ -92,6 +97,11 @@ export const caching: CurriculumModule = {
         { kind: "budget", maxMonthly: 650 },
       ],
       par: { monthly: 630, complexity: 3 },
+      finalHint: [
+        "Select the cache and turn on Invalidate on write.",
+        "Keep Time to live at 600 s, cache size S, API size XL, and database size M.",
+        "Keep Clients → API server, API server → Database, and API server → Cache connected.",
+      ],
       hints: [
         "The system is fast, but visitors are sent to old destinations.",
         "The cache keeps the old URL until its TTL runs out.",
@@ -149,6 +159,11 @@ export const caching: CurriculumModule = {
         { kind: "budget", maxMonthly: 560 },
       ],
       par: { monthly: 540, complexity: 3 },
+      finalHint: [
+        "On the cache, turn on Request coalescing and TTL jitter.",
+        "Keep Invalidate on write on and Time to live at 20 s.",
+        "Keep the XL API server, S database, S cache, and all existing routes.",
+      ],
       hints: [
         "Most seconds are fine, but every few seconds latency spikes.",
         "The spikes line up with the viral link's cache entry refreshing, and with whole-cache expiry.",

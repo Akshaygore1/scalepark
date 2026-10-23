@@ -63,6 +63,7 @@ export const sandboxLevel: SimLevel = {
   targets: [],
   par: { monthly: Infinity, complexity: Infinity },
   hints: ["", "", ""],
+  finalHint: [],
 };
 
 export function levelById(id: string): Level | undefined {

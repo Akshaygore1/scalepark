@@ -191,6 +191,23 @@ body:has(.tycoon-shell) {
   font-size: 11px;
   font-weight: 800;
 }
+.hint-solution > summary {
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.hint-solution > summary:focus-visible {
+  outline: 2px solid var(--park-ink);
+  outline-offset: 3px;
+}
+.hint-solution > p {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.hint-solution > ol {
+  padding-left: 18px;
+  list-style: decimal;
+}
 
 /* Park */
 .game-stage {
@@ -1165,7 +1182,6 @@ body:has(.tycoon-shell) {
 .inspector-math {
   margin-bottom: 12px;
   padding: 8px 10px;
-  border-left: 3px solid var(--park-yellow);
   border-radius: 4px;
   background: #f7f6eb;
   color: #355b52;

@@ -52,6 +52,10 @@ export const liveUpdates: CurriculumModule = {
         { kind: "budget", maxMonthly: 350 },
       ],
       par: { monthly: 310, complexity: 3 },
+      finalHint: [
+        "On the API, set Live updates to Push (open connection).",
+        "Keep the single M API server, M database, S cache, Time to live 120 s, and existing routes.",
+      ],
       hints: [
         "Counters are several seconds behind.",
         "The poll interval sets how stale a counter can be; polling faster multiplies the load.",
@@ -107,6 +111,11 @@ export const liveUpdates: CurriculumModule = {
         { kind: "budget", maxMonthly: 900 },
       ],
       par: { monthly: 840, complexity: 6 },
+      finalHint: [
+        "On the API, keep Server size L and raise Servers to 3. Keep Live updates at Push (open connection) and Login sessions at Shared cache.",
+        "Build a pub/sub broker and connect API server → Pub/sub broker.",
+        "Keep the load balancer with Health checks on, M database, S cache, and existing routes.",
+      ],
       hints: [
         "One server runs out of room for connections; with more servers, most viewers stop seeing updates.",
         "Each server only knows about clicks it handled itself.",

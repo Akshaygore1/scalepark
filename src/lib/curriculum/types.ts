@@ -58,6 +58,8 @@ export type SimLevel = LevelBase & {
   /** Stars two and three: stay within the cost and complexity of a lean solution. */
   par: { monthly: number; complexity: number };
   hints: [symptom: string, subsystem: string, strategy: string];
+  /** Exact steps from the starting park, revealed only after all three hints. */
+  finalHint: string[];
   /** Design questions answered before the first run. */
   before?: QuizStep[];
   /** Questions answered after passing, scored on the capstone. */

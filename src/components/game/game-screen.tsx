@@ -20,7 +20,6 @@ import {
   type NodeType,
   type ParkNode,
 } from "@/lib/model";
-import { exportPark, importPark } from "@/lib/park-file";
 import { forgetPark, recordResult, savePark } from "@/lib/progress";
 
 import { updateProgress, useProgress } from "../progress-store";
@@ -53,7 +52,6 @@ export function GameScreen({ level }: { level: SimLevel }) {
     }),
   );
   const [sandbox, setSandbox] = useState<SandboxSettings>(defaultSandbox);
-  const importInput = useRef<HTMLInputElement>(null);
   const recordedRun = useRef<unknown>(null);
 
   const features = useMemo(() => new Set(level.unlocks.features), [level]);
@@ -218,29 +216,6 @@ export function GameScreen({ level }: { level: SimLevel }) {
     dispatch({ type: "select", nodeId: null });
   }
 
-  function download() {
-    const url = URL.createObjectURL(new Blob([exportPark(state.architecture)], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `scalelab-${level.id}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async function upload(file?: File) {
-    if (!file) return;
-    try {
-      const park = importPark(await file.text());
-      const locked = park.nodes.filter((node) => node.type !== "client" && !level.unlocks.nodes.includes(node.type));
-      if (locked.length > 0) {
-        throw new Error(`This level has not unlocked: ${[...new Set(locked.map((node) => nodeCatalog[node.type].label))].join(", ")}.`);
-      }
-      edit(() => park, "Park imported.");
-    } catch (error) {
-      dispatch({ type: "notice", notice: error instanceof Error ? error.message : "That park could not be imported." });
-    }
-  }
-
   const labels = new Map(state.architecture.nodes.map((node) => [node.id, nodeLabel(node)]));
   const firstSaturated = run?.result.totals.firstSaturated?.node;
 
@@ -271,19 +246,7 @@ export function GameScreen({ level }: { level: SimLevel }) {
         onHint={() => dispatch({ type: "hint" })}
         onToggleHint={() => dispatch({ type: "toggle-hint" })}
         onJournal={() => dispatch({ type: "open", dialog: { kind: "journal" } })}
-        onExport={download}
-        onImport={() => importInput.current?.click()}
         onReset={reset}
-      />
-      <input
-        ref={importInput}
-        hidden
-        type="file"
-        accept="application/json,.json"
-        onChange={(event) => {
-          void upload(event.target.files?.[0]);
-          event.target.value = "";
-        }}
       />
 
       <section className="game-stage" aria-label="ScaleLab technology park">
