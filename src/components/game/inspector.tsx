@@ -11,13 +11,20 @@ import {
   DB_COST,
   DB_MEMORY_ROWS,
   MAX_INSTANCES,
+  MAX_COUNTER_SHARDS,
   MAX_SHARDS,
+  SERVICE_THREADS,
   WORKER_CAPACITY,
+  capabilities,
+  capabilityCatalog,
   nodeCatalog,
+  nodeLabel,
   nodeComplexity,
   nodeMonthlyCost,
   sizes,
   type Architecture,
+  type CallConfig,
+  type Capability,
   type Feature,
   type NodeConfigs,
   type ParkNode,
@@ -35,7 +42,9 @@ export function Inspector({
   features,
   metrics,
   editable,
+  capabilityOptions,
   onChange,
+  onRouteChange,
   onRemove,
   onDisconnect,
   onClose,
@@ -45,7 +54,10 @@ export function Inspector({
   features: ReadonlySet<Feature>;
   metrics?: NodeSnapshot;
   editable: boolean;
+  /** Capabilities this level's requests need, in catalog order. */
+  capabilityOptions: readonly Capability[];
   onChange: Change;
+  onRouteChange: (edgeId: string, change: Partial<CallConfig>) => void;
   onRemove: () => void;
   onDisconnect: (edgeId: string) => void;
   onClose: () => void;
@@ -56,10 +68,10 @@ export function Inspector({
   const routes = architecture.edges
     .filter((edge) => edge.source === node.id)
     .map((edge) => ({ edge, target: architecture.nodes.find((candidate) => candidate.id === edge.target) }));
-  const settings = settingsFor(node, features, editable, onChange);
+  const settings = settingsFor(node, architecture, features, capabilityOptions, editable, onChange);
   const health = metrics?.health ?? "ready";
   return (
-    <aside className="building-inspector" aria-label={`${nodeCatalog[node.type].label} controls`}>
+    <aside className="building-inspector" aria-label={`${nodeLabel(node)} controls`}>
       <header className="inspector-header">
         <div className="inspector-header-main">
           <div className={`inspector-avatar ${color}`}>
@@ -67,7 +79,7 @@ export function Inspector({
           </div>
           <div className="inspector-identity">
             <span className="inspector-kicker">{formatMoney(nodeMonthlyCost(node))}/mo · complexity {nodeComplexity(node)}</span>
-            <h2>{nodeCatalog[node.type].label}</h2>
+            <h2>{nodeLabel(node)}</h2>
             <div className={`inspector-health status-${health}`}>
               <Activity />
               <span>{health === "saturated" ? "overloaded" : health}</span>
@@ -134,8 +146,13 @@ export function Inspector({
                   <div className="inspector-route-config" key={edge.id}>
                     <div className="inspector-route-destination">
                       <span>To</span>
-                      <strong>{target ? nodeCatalog[target.type].label : "Missing building"}</strong>
+                      <strong>{target ? nodeLabel(target) : "Missing building"}</strong>
                     </div>
+                    {edge.call && (
+                      <div className="inspector-config">
+                        {callSettings(edge.call, target, features, editable, (change) => onRouteChange(edge.id, change))}
+                      </div>
+                    )}
                     {editable && (
                       <button type="button" onClick={() => onDisconnect(edge.id)}>
                         <Trash2 />
@@ -175,12 +192,21 @@ function capacityMath(node: ParkNode) {
       return `Each worker processes ${WORKER_CAPACITY.toLocaleString()} jobs per second, writing them to the database in batches.`;
     case "load-balancer":
       return "Spreads requests evenly across every API server it can reach.";
+    case "service":
+      return `Each ${node.config.size} instance does ${API_CAPACITY[node.config.size].toLocaleString()} units of work per second and holds ${SERVICE_THREADS[node.config.size].toLocaleString()} requests at once, for ${formatMoney(API_COST[node.config.size])}/mo. A request holds its thread while it waits on other services.`;
     default:
       return nodeCatalog[node.type].role;
   }
 }
 
-function settingsFor(node: ParkNode, features: ReadonlySet<Feature>, editable: boolean, onChange: Change): ReactNode[] {
+function settingsFor(
+  node: ParkNode,
+  architecture: Architecture,
+  features: ReadonlySet<Feature>,
+  capabilityOptions: readonly Capability[],
+  editable: boolean,
+  onChange: Change,
+): ReactNode[] {
   const has = (feature: Feature) => features.has(feature);
   const fields: ReactNode[] = [];
   const size = (label: string, value: Size, costs: Record<Size, number>, options: readonly Size[] = sizes) =>
@@ -364,8 +390,101 @@ function settingsFor(node: ParkNode, features: ReadonlySet<Feature>, editable: b
         );
       }
       break;
+    case "service": {
+      const config = node.config;
+      if (has("capabilities")) {
+        const elsewhere = new Set(
+          architecture.nodes.flatMap((other) => (other.type === "service" && other.id !== node.id ? other.config.capabilities : [])),
+        );
+        for (const capability of capabilityOptions) {
+          const owned = config.capabilities.includes(capability);
+          fields.push(
+            <Toggle
+              key={`cap-${capability}`}
+              label={capabilityCatalog[capability].label}
+              detail={owned ? "Runs here" : elsewhere.has(capability) ? "Runs in another service" : "Not running here"}
+              checked={owned}
+              disabled={!editable}
+              onChange={(checked) =>
+                onChange({
+                  capabilities: checked
+                    ? capabilities.filter((item) => item === capability || config.capabilities.includes(item))
+                    : config.capabilities.filter((item) => item !== capability),
+                })
+              }
+            />,
+          );
+        }
+      }
+      if (has("size")) size("Instance size", config.size, API_COST);
+      if (has("instances")) {
+        fields.push(
+          <Stepper key="instances" label="Instances" value={config.instances} min={1} max={MAX_INSTANCES} disabled={!editable} onChange={(instances) => onChange({ instances })} />,
+        );
+      }
+      if (has("counter-shards") && config.capabilities.includes("analytics")) {
+        fields.push(
+          <Stepper key="counter-shards" label="Counter rows" value={config.counterShards} min={1} max={MAX_COUNTER_SHARDS} disabled={!editable} onChange={(counterShards) => onChange({ counterShards })} />,
+        );
+      }
+      if (has("locks") && config.capabilities.includes("locks")) {
+        fields.push(
+          <NumberField key="lease" label="Lock lease" unit="s" value={config.leaseSeconds} min={1} max={60} disabled={!editable} onChange={(leaseSeconds) => onChange({ leaseSeconds })} />,
+        );
+      }
+      if (has("locks") && config.capabilities.includes("links")) {
+        fields.push(
+          <Toggle key="fencing" label="Check fencing tokens" detail="Reject writes with an older lock token than the last one seen" checked={config.fencing} disabled={!editable} onChange={(fencing) => onChange({ fencing })} />,
+        );
+      }
+      break;
+    }
     default:
       break;
+  }
+  return fields;
+}
+
+function callSettings(
+  call: CallConfig,
+  target: ParkNode | undefined,
+  features: ReadonlySet<Feature>,
+  editable: boolean,
+  onChange: (change: Partial<CallConfig>) => void,
+): ReactNode[] {
+  const has = (feature: Feature) => features.has(feature);
+  const fields: ReactNode[] = [];
+  if (has("async")) {
+    fields.push(
+      <SelectField key="mode" label="Call" value={call.mode} disabled={!editable} options={[{ value: "sync", label: "Wait for the answer" }, { value: "async", label: "Send a message (queued)" }]} onChange={(mode) => onChange({ mode: mode as CallConfig["mode"] })} />,
+    );
+  }
+  if (call.mode === "async") return fields;
+  if (has("timeouts")) {
+    fields.push(
+      <NumberField key="timeout" label="Timeout (0 waits forever)" unit="ms" value={call.timeoutMs} min={0} max={30_000} step={50} disabled={!editable} onChange={(timeoutMs) => onChange({ timeoutMs })} />,
+    );
+  }
+  if (has("retries")) {
+    fields.push(
+      <Stepper key="retries" label="Retries" value={call.retries} min={0} max={5} disabled={!editable} onChange={(retries) => onChange({ retries })} />,
+    );
+    if (call.retries > 0) {
+      fields.push(
+        <Toggle key="backoff" label="Backoff with jitter" detail="Wait longer after each failure, and cap retries at 10% of calls" checked={call.backoff} disabled={!editable} onChange={(backoff) => onChange({ backoff })} />,
+      );
+    }
+  }
+  if (has("circuit-breaker")) {
+    fields.push(
+      <Toggle key="breaker" label="Circuit breaker" detail="After 2 bad seconds, fail fast for 2 seconds" checked={call.circuitBreaker} disabled={!editable} onChange={(circuitBreaker) => onChange({ circuitBreaker })} />,
+    );
+  }
+  const fallback = target?.type === "service" ? target.config.capabilities.map((item) => capabilityCatalog[item].fallback).find(Boolean) : undefined;
+  if (has("fallback") && fallback) {
+    fields.push(
+      <Toggle key="fallback" label="Fallback on failure" detail={fallback} checked={call.fallback} disabled={!editable} onChange={(fallback) => onChange({ fallback })} />,
+    );
   }
   return fields;
 }

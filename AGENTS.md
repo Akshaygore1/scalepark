@@ -10,7 +10,8 @@
 
 - One client-only Vite/React app. `src/main.tsx` mounts the browser router in `src/router.tsx`; route-like filenames under `src/routes/` do not imply file-based routing.
 - Domain logic lives in `src/lib/` and has no React: `model.ts` (buildings, settings, capacities, costs), `topology.ts` (validation and request paths), `simulation.ts` (deterministic per-second engine), `evaluate.ts` (targets, stars, capstone score), `progress.ts` (persistence).
-- Levels live in `src/lib/curriculum/`, one file per curriculum module. A level unlocks buildings and settings (`unlocks.features`); the inspector shows only unlocked settings.
+- Part 2 (module 11 on) uses a second engine, `services.ts`, for parks of `service` buildings; a scenario with `kind: "services"` selects it through `engine.ts`. Snapshots and events key buildings by node id, since a park can hold many services.
+- Levels live in `src/lib/curriculum/`, one file per curriculum module, grouped into parts in `index.ts`. A level unlocks buildings and settings (`unlocks.features`); the inspector shows only unlocked settings.
 - `src/components/game/game-screen.tsx` orchestrates a level through the reducer in `game-state.ts`. A run is simulated in full when it starts and then played back; parks can only be edited while no run is playing.
 - Styles are plain CSS in `src/styles/` with the park tokens in `base.css`. No Tailwind.
 - Use the `@/` alias for `src/` imports.

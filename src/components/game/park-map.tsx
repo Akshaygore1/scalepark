@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 
 import {
   canConnect,
-  nodeCatalog,
+  nodeLabel,
   nodeTypes,
   type Architecture,
   type NodeType,
@@ -220,7 +220,7 @@ export function ParkMap({
           </marker>
         </defs>
         {paths.map(({ edge, source, target, d }) => {
-          const flow = snapshot?.nodes[target.type];
+          const flow = snapshot?.nodes[target.id];
           const health = flow?.health;
           const congested = health === "saturated" || health === "failed";
           const packets = flow ? Math.max(1, Math.min(5, Math.ceil(flow.load / 1_500))) : 0;
@@ -229,7 +229,7 @@ export function ParkMap({
           return (
             <g key={edge.id}>
               <path className={`route-shadow ${selected ? "selected" : ""}`} d={d} />
-              <path className={`route-line ${health === "failed" ? "interrupted" : ""} ${selected ? "selected" : ""}`} d={d} />
+              <path className={`route-line ${health === "failed" ? "interrupted" : ""} ${edge.call?.mode === "async" ? "async" : ""} ${selected ? "selected" : ""}`} d={d} />
               {Array.from({ length: packets }, (_, index) => (
                 <circle className={congested ? "traffic-packet congested" : "traffic-packet"} key={index} r="5">
                   <animateMotion begin={`${index * -(duration / packets)}s`} dur={`${duration}s`} path={d} repeatCount="indefinite" />
@@ -240,7 +240,7 @@ export function ParkMap({
                 d={d}
                 role="button"
                 tabIndex={editable ? 0 : -1}
-                aria-label={`Route from ${nodeCatalog[source.type].label} to ${nodeCatalog[target.type].label}`}
+                aria-label={`Route from ${nodeLabel(source)} to ${nodeLabel(target)}`}
                 aria-pressed={selected}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -288,7 +288,7 @@ export function ParkMap({
         <Building
           key={node.id}
           node={node}
-          health={snapshot ? (snapshot.nodes[node.type]?.health ?? "idle") : undefined}
+          health={snapshot ? (snapshot.nodes[node.id]?.health ?? "idle") : undefined}
           selected={selectedId === node.id}
           editable={editable}
           connecting={activeSource === node.id}
@@ -345,15 +345,15 @@ function RouteAction({
     <div
       className="route-action"
       role="group"
-      aria-label={`Route from ${nodeCatalog[source.type].label} to ${nodeCatalog[target.type].label}`}
+      aria-label={`Route from ${nodeLabel(source)} to ${nodeLabel(target)}`}
       style={{ left: (from.x + to.x) / 2, top: (from.y + to.y) / 2 }}
       onClick={(event) => event.stopPropagation()}
       data-edge-id={edge.id}
     >
       <span>
-        <b>{nodeCatalog[source.type].short}</b>
+        <b>{nodeLabel(source)}</b>
         <i aria-hidden="true">→</i>
-        <b>{nodeCatalog[target.type].short}</b>
+        <b>{nodeLabel(target)}</b>
       </span>
       <button type="button" onClick={onDisconnect}>
         <Trash2 aria-hidden="true" />
@@ -375,6 +375,8 @@ function buildingSubtitle(node: ParkNode) {
       return node.config.shards > 1 ? `${node.config.size} ×${node.config.shards} shards` : node.config.size;
     case "cache":
       return `${node.config.size} · ${node.config.ttlSeconds}s`;
+    case "service":
+      return `${node.config.size} ×${node.config.instances}`;
     default:
       return "";
   }
@@ -436,7 +438,7 @@ function Building({
       <button
         className="building-select"
         type="button"
-        aria-label={`${nodeCatalog[node.type].label}${subtitle ? `, ${subtitle}` : ""}, ${status}`}
+        aria-label={`${nodeLabel(node)}${subtitle ? `, ${subtitle}` : ""}, ${status}`}
         onClick={(event) => {
           event.stopPropagation();
           if (!suppressClick.current) onClick();
@@ -496,7 +498,7 @@ function Building({
           <i />
         </span>
         <span className="building-label">
-          <b>{nodeCatalog[node.type].label}</b>
+          <b title={nodeLabel(node)}>{nodeLabel(node)}</b>
           {subtitle && <small>{subtitle}</small>}
         </span>
         {(health === "busy" || health === "saturated" || health === "failed") && (
@@ -507,7 +509,7 @@ function Building({
         <button
           className="connection-handle"
           type="button"
-          aria-label={`Connect from ${nodeCatalog[node.type].label}`}
+          aria-label={`Connect from ${nodeLabel(node)}`}
           aria-pressed={connecting}
           disabled={connectorDisabled}
           onClick={(event) => {

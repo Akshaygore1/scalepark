@@ -10,7 +10,7 @@ import {
   type Architecture,
   type NodeType,
 } from "./model";
-import { validatePark, type Topology, type Validation } from "./topology";
+import { validatePark, type Topology, type ValidationSummary } from "./topology";
 
 export type Keyframes = ReadonlyArray<readonly [second: number, value: number]>;
 
@@ -110,7 +110,8 @@ export type Snapshot = {
   p95Ms: number;
   monthlyCost: number;
   classes: LatencyClass[];
-  nodes: Partial<Record<NodeType, NodeSnapshot>>;
+  /** Keyed by building id. */
+  nodes: Record<string, NodeSnapshot>;
   cacheHitRate: number;
   staleReads: number;
   notFound: number;
@@ -128,12 +129,19 @@ export type Snapshot = {
   analyticsDelaySeconds: number;
   apiInstances: { running: number; warming: number; crashed: number };
   replicaLagSeconds: number;
+  /** Requests per operation, for parks of services. */
+  operations?: OperationStat[];
+  clicksLost?: number;
+  doubleClaims?: number;
 };
+
+export type OperationStat = { id: string; label: string; demand: number; successful: number };
 
 export type SimEvent = {
   second: number;
   kind: "incident" | "saturation" | "recovery" | "scaling" | "info";
-  node?: NodeType;
+  /** Building id. */
+  node?: string;
   message: string;
 };
 
@@ -156,17 +164,21 @@ export type Totals = {
   maxMissedUpdates: number;
   maxAnalyticsDelaySeconds: number;
   finalBacklog: number;
-  firstSaturated?: { node: NodeType; second: number };
+  operations: Record<string, { label: string; availability: number }>;
+  clicksLost: number;
+  doubleClaims: number;
+  /** The building that ran out of headroom first, by id. */
+  firstSaturated?: { node: string; second: number };
 };
 
 export type SimulationResult = {
-  validation: Validation;
+  validation: ValidationSummary;
   snapshots: Snapshot[];
   events: SimEvent[];
   totals: Totals;
 };
 
-type Stage = { backlog: number; dropFraction: number; utilization: number; waitMs: number };
+export type Stage = { backlog: number; dropFraction: number; utilization: number; waitMs: number };
 
 type EngineState = {
   apiRunning: number;
@@ -186,7 +198,7 @@ type EngineState = {
   dataLost: boolean;
   linkRows: number;
   databaseUtilization: number;
-  saturated: Set<NodeType>;
+  saturated: Set<string>;
 };
 
 const HEALTH_CHECK_SECONDS = 2;
@@ -208,7 +220,7 @@ export function valueAt(frames: Keyframes | undefined, second: number) {
   return frames.at(-1)![1];
 }
 
-function stage(load: number, backlog: number, capacity: number): Stage {
+export function stage(load: number, backlog: number, capacity: number): Stage {
   const offered = load + backlog;
   if (capacity <= 0) {
     return { backlog: 0, dropFraction: offered > 0 ? 1 : 0, utilization: offered > 0 ? 9.99 : 0, waitMs: 0 };
@@ -225,12 +237,12 @@ function stage(load: number, backlog: number, capacity: number): Stage {
 }
 
 /** Queueing delay grows sharply as a component approaches full utilization. */
-function serviceMs(baseMs: number, current: Stage) {
+export function serviceMs(baseMs: number, current: Stage) {
   const busy = Math.min(current.utilization, 0.95);
   return baseMs * (1 + (2 * busy) / (1 - busy)) + current.waitMs;
 }
 
-function clamp01(value: number) {
+export function clamp01(value: number) {
   return Math.min(1, Math.max(0, value));
 }
 
@@ -242,7 +254,7 @@ function health(current: Stage, capacity: number, load: number): Health {
   return "healthy";
 }
 
-function nodeSnapshot(load: number, capacity: number, current: Stage, detail: string): NodeSnapshot {
+export function nodeSnapshot(load: number, capacity: number, current: Stage, detail: string): NodeSnapshot {
   return {
     load: Math.round(load),
     capacity: Math.round(capacity),
@@ -252,7 +264,7 @@ function nodeSnapshot(load: number, capacity: number, current: Stage, detail: st
   };
 }
 
-function percentile(classes: LatencyClass[], share: number) {
+export function percentile(classes: LatencyClass[], share: number) {
   const total = classes.reduce((sum, item) => sum + item.volume, 0);
   if (total <= 0) return 0;
   const sorted = [...classes].filter((item) => item.volume > 0).sort((a, b) => a.latencyMs - b.latencyMs);
@@ -321,8 +333,9 @@ function tick(
   const viewers = valueAt(traffic.viewers, second);
   const bots = valueAt(traffic.bots, second);
   const hotKey = Math.min(redirects, valueAt(traffic.hotKey, second));
+  const idOf = (type: NodeType) => billed.find((node) => node.type === type)?.id ?? type;
   const emit = (kind: SimEvent["kind"], message: string, node?: NodeType) =>
-    events.push({ second, kind, message, node });
+    events.push({ second, kind, message, node: node && idOf(node) });
 
   // Deployments and incidents that change the park this second.
   const ready = state.apiWarming.filter((readyAt) => readyAt <= second);
@@ -687,7 +700,7 @@ function tick(
     }
   }
 
-  const nodes: Snapshot["nodes"] = {
+  const nodes: Partial<Record<NodeType, NodeSnapshot>> = {
     client: nodeSnapshot(demand + bots * params.botRate, Infinity, stage(0, 0, 1), `${Math.round(demand).toLocaleString()} req/s`),
     api: nodeSnapshot(apiLoad, apiCapacity, apiStage, `${reachable} of ${state.apiRunning + state.apiCrashed} servers reachable`),
     database: nodeSnapshot(
@@ -725,16 +738,11 @@ function tick(
   if (topology.pubsub) nodes.pubsub = nodeSnapshot(viewers > 0 ? clicks : 0, 200_000, stage(0, 0, 1), "Fanning out updates");
   if (archive) nodes.archive = nodeSnapshot(archivedReads, Infinity, stage(0, 0, 1), `${Math.round(archivedReads).toLocaleString()} reads/s`);
 
-  for (const [type, snapshot] of Object.entries(nodes) as Array<[NodeType, NodeSnapshot]>) {
-    const saturated = snapshot.health === "saturated" || snapshot.health === "failed";
-    if (saturated && !state.saturated.has(type)) {
-      state.saturated.add(type);
-      emit("saturation", `${nodeCatalog[type].label} ${snapshot.health === "failed" ? "is failing every request" : "is at capacity: work is queueing"}.`, type);
-    } else if (!saturated && state.saturated.has(type)) {
-      state.saturated.delete(type);
-      emit("recovery", `${nodeCatalog[type].label} has headroom again.`, type);
-    }
-  }
+  trackSaturation(
+    Object.entries(nodes).map(([type, snapshot]) => ({ id: idOf(type as NodeType), label: nodeCatalog[type as NodeType].label, snapshot: snapshot! })),
+    state.saturated,
+    (kind, message, id) => events.push({ second, kind, message, node: id }),
+  );
 
   state.linkRows += scenario.data.linkRowsPerSecond ?? 0;
   // Every building is billed, including ones that are not on a request path.
@@ -755,7 +763,7 @@ function tick(
     p95Ms: percentile(classes, 0.95),
     monthlyCost,
     classes,
-    nodes,
+    nodes: Object.fromEntries(Object.entries(nodes).map(([type, snapshot]) => [idOf(type as NodeType), snapshot!])),
     cacheHitRate: redirectReads > 0 ? hits / redirectReads : 0,
     staleReads,
     notFound,
@@ -806,9 +814,35 @@ export function summarize(snapshots: Snapshot[], events: SimEvent[]): Totals {
     maxMissedUpdates: max((snapshot) => snapshot.missedUpdates),
     maxAnalyticsDelaySeconds: max((snapshot) => snapshot.analyticsDelaySeconds),
     finalBacklog: snapshots.at(-1)?.queueBacklog ?? 0,
-    firstSaturated:
-      firstSaturation?.node && firstSaturation.node !== "client"
-        ? { node: firstSaturation.node, second: firstSaturation.second }
-        : undefined,
+    operations: Object.fromEntries(
+      (snapshots[0]?.operations ?? []).map(({ id, label }) => {
+        const demandFor = sum((snapshot) => snapshot.operations?.find((item) => item.id === id)?.demand ?? 0);
+        const okFor = sum((snapshot) => snapshot.operations?.find((item) => item.id === id)?.successful ?? 0);
+        return [id, { label, availability: demandFor > 0 ? okFor / demandFor : 1 }];
+      }),
+    ),
+    clicksLost: Math.round(sum((snapshot) => snapshot.clicksLost ?? 0)),
+    doubleClaims: Math.round(sum((snapshot) => snapshot.doubleClaims ?? 0)),
+    firstSaturated: firstSaturation?.node
+      ? { node: firstSaturation.node, second: firstSaturation.second }
+      : undefined,
   };
+}
+
+/** Emit saturation and recovery events when a building crosses into or out of overload. */
+export function trackSaturation(
+  nodes: Array<{ id: string; label: string; snapshot: NodeSnapshot }>,
+  saturatedIds: Set<string>,
+  emit: (kind: "saturation" | "recovery", message: string, id: string) => void,
+) {
+  for (const { id, label, snapshot } of nodes) {
+    const saturated = snapshot.health === "saturated" || snapshot.health === "failed";
+    if (saturated && !saturatedIds.has(id)) {
+      saturatedIds.add(id);
+      emit("saturation", `${label} ${snapshot.health === "failed" ? "is failing every request" : "is at capacity: work is queueing"}.`, id);
+    } else if (!saturated && saturatedIds.has(id)) {
+      saturatedIds.delete(id);
+      emit("recovery", `${label} has headroom again.`, id);
+    }
+  }
 }

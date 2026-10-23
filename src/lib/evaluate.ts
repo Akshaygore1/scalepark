@@ -1,5 +1,5 @@
 import type { SimLevel, Target } from "./curriculum/types";
-import { architectureComplexity, nodeCatalog, type Architecture } from "./model";
+import { architectureComplexity, nodeLabel, type Architecture } from "./model";
 import type { SimulationResult, Totals } from "./simulation";
 
 export type TargetResult = { target: Target; label: string; goal: string; measured: string; pass: boolean };
@@ -65,6 +65,14 @@ export function measureTarget(target: Target, result: SimulationResult): TargetR
       return row(target, "Click count delay", `≤ ${target.maxSeconds} s`, `${totals.maxAnalyticsDelaySeconds.toFixed(1)} s`, totals.maxAnalyticsDelaySeconds <= target.maxSeconds);
     case "backlog-drained":
       return row(target, "Jobs left at the end", "0", count(totals.finalBacklog), totals.finalBacklog < 1);
+    case "operation-availability": {
+      const measured = totals.operations[target.operation]?.availability ?? 1;
+      return row(target, `${target.label} succeeding`, `≥ ${percent(target.min)}`, percent(measured), measured >= target.min);
+    }
+    case "clicks-lost":
+      return row(target, "Clicks lost", `≤ ${count(target.max)}`, count(totals.clicksLost), totals.clicksLost <= target.max);
+    case "double-claims":
+      return row(target, "Aliases given out twice", `≤ ${count(target.max)}`, count(totals.doubleClaims), totals.doubleClaims <= target.max);
   }
 }
 
@@ -89,6 +97,9 @@ const failureReasons: Record<Target["kind"], string> = {
   "missed-updates": "Some viewers never received updates because their server did not hear about the clicks.",
   "analytics-delay": "Clicks waited too long in the queue before being counted.",
   "backlog-drained": "Background jobs were still waiting when the run ended.",
+  "operation-availability": "Too many requests of one kind failed. Follow the failing calls to the service behind them.",
+  "clicks-lost": "Clicks were dropped because the call that records them failed and nothing kept them for later.",
+  "double-claims": "Two people were given the same custom alias because a lock was trusted after it had expired.",
 };
 
 export function evaluateRun(
@@ -118,8 +129,9 @@ export function evaluateRun(
   const first = result.totals.firstSaturated;
   if (first) {
     const snapshot = result.snapshots[first.second]?.nodes[first.node];
+    const node = architecture.nodes.find((candidate) => candidate.id === first.node);
     story.push(
-      `${nodeCatalog[first.node].label} ran out of headroom first, at ${formatClock(first.second)}${
+      `${node ? nodeLabel(node) : "A building"} ran out of headroom first, at ${formatClock(first.second)}${
         snapshot && Number.isFinite(snapshot.capacity) && snapshot.capacity > 0
           ? ` (${count(snapshot.load)} units of work for ${count(snapshot.capacity)} of capacity)`
           : ""

@@ -33,11 +33,20 @@ Stars reward lean designs: one for passing, two for staying at or under the par 
 | 9. Growing big | Cold Links (archiving), Partitioning, The Hard Step (sharding) |
 | 10. Putting it together | Blank Page: a full design, scored out of 1,000 |
 
+Part 2 splits the link shortener into services:
+
+| Module | Levels |
+| --- | --- |
+| 11. Microservices | Bad Deploy (failure isolation), Chatty Services (service boundaries), Where Did It Go Slow? (tracing) |
+| 12. Problems in distributed systems | No Timeout (timeouts and fallbacks), Retry Storm (backoff and circuit breakers), Hot Counter (sharded counters), Expired Lock (leases and fencing tokens) |
+
 Module 1 and parts of module 2 are design questions. Every other level is a simulation. The sandbox unlocks every building and setting, with a traffic lab and incident switches.
 
 ## Simulation
 
 The simulation is deterministic and runs in the browser in a few milliseconds per run. Each second it moves traffic through the park's request paths: rate limiting, load balancing, API servers, cache, replicas, the primary database or its shards, and the queue and workers. Latency rises sharply as a building nears full capacity, work that waits too long times out, and incidents such as crashed servers, failed primaries, or dropped tables play out on a fixed schedule.
+
+Part 2 levels run on a second engine for parks of services. Each request type names the capabilities it needs; the service clients connect to calls the services that own them, waiting for an answer or sending a queued message. Calls cost a network hop, hold a thread while they wait, and can time out, retry, trip a circuit breaker, or fall back to a default.
 
 It is an educational model. Its numbers are simplified to make trade-offs visible; they are not capacity estimates or cloud prices.
 
@@ -81,7 +90,9 @@ src/
 │   ├── curriculum/      Levels, one file per module
 │   ├── model.ts         Buildings, settings, capacities, and costs
 │   ├── topology.ts      Validation and request-path resolution
-│   ├── simulation.ts    The per-second engine
+│   ├── simulation.ts    The per-second engine for Part 1 parks
+│   ├── services.ts      The per-second engine for parks of services
+│   ├── engine.ts        Picks the engine for a scenario
 │   ├── evaluate.ts      Targets, stars, and the capstone score
 │   └── progress.ts      Saved progress
 ├── styles/              Park styles

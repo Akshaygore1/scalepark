@@ -10,21 +10,32 @@ import { backgroundJobs } from "./m07-background-jobs";
 import { rateLimiting } from "./m08-rate-limiting";
 import { growingBig } from "./m09-growing-big";
 import { capstone } from "./m10-capstone";
+import { microservices } from "./m11-microservices";
+import { distributedProblems } from "./m12-distributed-problems";
 import { clientsOnly } from "./parks";
 import type { CurriculumModule, Level, SimLevel } from "./types";
 
-export const curriculum: CurriculumModule[] = [
-  foundations,
-  simpleSystem,
-  caching,
-  scalingServers,
-  scalingDatabases,
-  liveUpdates,
-  backgroundJobs,
-  rateLimiting,
-  growingBig,
-  capstone,
+export const parts: Array<{ number: number; title: string; modules: CurriculumModule[] }> = [
+  {
+    number: 1,
+    title: "Foundations",
+    modules: [
+      foundations,
+      simpleSystem,
+      caching,
+      scalingServers,
+      scalingDatabases,
+      liveUpdates,
+      backgroundJobs,
+      rateLimiting,
+      growingBig,
+      capstone,
+    ],
+  },
+  { number: 2, title: "Distributed systems", modules: [microservices, distributedProblems] },
 ];
+
+export const curriculum: CurriculumModule[] = parts.flatMap((part) => part.modules);
 
 export const levels: Level[] = curriculum.flatMap((module) => module.levels);
 
@@ -46,7 +57,7 @@ export const sandboxLevel: SimLevel = {
   brief: "Build anything, set the traffic, inject incidents, and watch what happens.",
   refresher: [],
   journal: { title: "", body: "", note: "" },
-  unlocks: { nodes: nodeTypes.filter((type) => type !== "client"), features: [...features] },
+  unlocks: { nodes: nodeTypes.filter((type) => type !== "client" && type !== "service"), features: [...features] },
   start: clientsOnly,
   scenario: sandboxScenario,
   targets: [],

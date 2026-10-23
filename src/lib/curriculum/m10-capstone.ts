@@ -29,7 +29,7 @@ export const capstone: CurriculumModule = {
         body: "Start simple, measure, fix the first bottleneck, and repeat. State each trade-off as you make it.",
         note: "You now know the core of Part 1: requirements, caching, scaling servers and databases, live updates, background jobs, rate limiting, and growth.",
       },
-      unlocks: { nodes: nodeTypes.filter((type) => type !== "client"), features: [...features] },
+      unlocks: { nodes: nodeTypes.filter((type) => type !== "client" && type !== "service"), features: [...features] },
       start: clientsOnly,
       scenario: {
         durationSeconds: 60,

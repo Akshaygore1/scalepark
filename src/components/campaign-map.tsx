@@ -1,7 +1,7 @@
 import { Activity, Boxes, Cloud, Lock, Play, Star } from "lucide-react";
 import { Link } from "react-router";
 
-import { curriculum, levels } from "@/lib/curriculum";
+import { levels, parts } from "@/lib/curriculum";
 import { isUnlocked } from "@/lib/progress";
 
 import { useProgress } from "./progress-store";
@@ -56,48 +56,55 @@ export function CampaignMap() {
 
       <section className="chapter-path" aria-label="Curriculum">
         <div className="chapter-path-heading">
-          <span>Part 1 · Foundations</span>
+          <span>Curriculum</span>
           <small>
             {completed} / {levels.length} complete
           </small>
         </div>
         <div className="chapter-path-scroll">
-          {curriculum.map((module) => (
-            <section className="module-stop" key={module.number} aria-label={`Module ${module.number}: ${module.title}`}>
-              <header>
-                <span className="module-number">{module.number}</span>
-                <span>
-                  <b>{module.title}</b>
-                  <small>{module.summary}</small>
-                </span>
-              </header>
-              {module.levels.map((level) => {
-                const unlocked = isUnlocked(progress, level.id);
-                const record = progress.levels[level.id];
-                return (
-                  <Link
-                    className={`chapter-stop ${record?.completed ? "complete" : ""}`}
-                    aria-disabled={!unlocked}
-                    key={level.id}
-                    to={unlocked ? `/game/${level.id}` : "#"}
-                    onClick={unlocked ? undefined : (event) => event.preventDefault()}
-                  >
-                    <span className="chapter-number">{unlocked ? level.code : <Lock size={14} />}</span>
+          {parts.map((part) => (
+            <div className="part-stop" key={part.number}>
+              <h2 className="part-heading">
+                Part {part.number} · {part.title}
+              </h2>
+              {part.modules.map((module) => (
+                <section className="module-stop" key={module.number} aria-label={`Module ${module.number}: ${module.title}`}>
+                  <header>
+                    <span className="module-number">{module.number}</span>
                     <span>
-                      <b>{level.title}</b>
-                      <small>{unlocked ? `${level.concept}${level.kind === "quiz" ? " · design questions" : ""}` : "Finish the level before this one"}</small>
+                      <b>{module.title}</b>
+                      <small>{module.summary}</small>
                     </span>
-                    {record?.completed && (
-                      <span className="chapter-stars" aria-label={`${record.stars} of 3 stars`}>
-                        {[1, 2, 3].map((star) => (
-                          <Star key={star} className={star <= record.stars ? "earned" : ""} />
-                        ))}
-                      </span>
-                    )}
-                  </Link>
-                );
-              })}
-            </section>
+                  </header>
+                  {module.levels.map((level) => {
+                    const unlocked = isUnlocked(progress, level.id);
+                    const record = progress.levels[level.id];
+                    return (
+                      <Link
+                        className={`chapter-stop ${record?.completed ? "complete" : ""}`}
+                        aria-disabled={!unlocked}
+                        key={level.id}
+                        to={unlocked ? `/game/${level.id}` : "#"}
+                        onClick={unlocked ? undefined : (event) => event.preventDefault()}
+                      >
+                        <span className="chapter-number">{unlocked ? level.code : <Lock size={14} />}</span>
+                        <span>
+                          <b>{level.title}</b>
+                          <small>{unlocked ? `${level.concept}${level.kind === "quiz" ? " · design questions" : ""}` : "Finish the level before this one"}</small>
+                        </span>
+                        {record?.completed && (
+                          <span className="chapter-stars" aria-label={`${record.stars} of 3 stars`}>
+                            {[1, 2, 3].map((star) => (
+                              <Star key={star} className={star <= record.stars ? "earned" : ""} />
+                            ))}
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  })}
+                </section>
+              ))}
+            </div>
           ))}
         </div>
       </section>
