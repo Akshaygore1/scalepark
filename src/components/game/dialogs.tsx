@@ -3,7 +3,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { curriculum, type Lesson, type QuizStep } from "@/lib/curriculum";
 import type { Outcome } from "@/lib/evaluate";
-import { nodeCatalog, type NodeType } from "@/lib/model";
 import type { Progress } from "@/lib/progress";
 
 import { formatMoney } from "./buildings";
@@ -174,7 +173,13 @@ export function QuizDialog({
   );
 }
 
-export function PredictionDialog({ options, onPredict }: { options: NodeType[]; onPredict: (prediction: Prediction) => void }) {
+export function PredictionDialog({
+  options,
+  onPredict,
+}: {
+  options: Array<{ id: string; label: string }>;
+  onPredict: (prediction: Prediction) => void;
+}) {
   return (
     <Overlay label="Make a prediction">
       <CoachFrame
@@ -189,10 +194,10 @@ export function PredictionDialog({ options, onPredict }: { options: NodeType[]; 
         <h2>What breaks first?</h2>
         <p>Guessing before you look makes the answer stick. Which building will run out of headroom first?</p>
         <div className="quiz-options prediction-options" role="group" aria-label="Buildings">
-          {options.map((type) => (
-            <button className="quiz-option" key={type} type="button" onClick={() => onPredict(type)}>
+          {options.map((option) => (
+            <button className="quiz-option" key={option.id} type="button" onClick={() => onPredict(option.id)}>
               <i aria-hidden="true" />
-              <span>{nodeCatalog[type].label}</span>
+              <span>{option.label}</span>
             </button>
           ))}
         </div>
@@ -205,6 +210,7 @@ export function OutcomeDialog({
   outcome,
   prediction,
   firstSaturated,
+  labels,
   isSandbox,
   hasNext,
   onReview,
@@ -214,7 +220,8 @@ export function OutcomeDialog({
 }: {
   outcome: Outcome;
   prediction: Prediction | null;
-  firstSaturated?: NodeType;
+  firstSaturated?: string;
+  labels: ReadonlyMap<string, string>;
   isSandbox: boolean;
   hasNext: boolean;
   onReview: () => void;
@@ -239,8 +246,8 @@ export function OutcomeDialog({
         )}
         {prediction !== null && (
           <p className={`outcome-prediction ${guessedRight ? "right" : "wrong"}`}>
-            You predicted {prediction === "none" ? "nothing would break" : `the ${nodeCatalog[prediction].label}`}.{" "}
-            {firstSaturated ? `The ${nodeCatalog[firstSaturated].label} ran out of headroom first.` : "Nothing ran out of headroom."}
+            You predicted {prediction === "none" ? "nothing would break" : `the ${labels.get(prediction) ?? "building"}`}.{" "}
+            {firstSaturated ? `The ${labels.get(firstSaturated) ?? "building"} ran out of headroom first.` : "Nothing ran out of headroom."}
           </p>
         )}
         {outcome.targets.length > 0 && (

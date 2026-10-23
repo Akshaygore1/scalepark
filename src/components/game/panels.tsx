@@ -265,7 +265,7 @@ export function BuildDock({
   editable: boolean;
   onBuild: (type: NodeType) => void;
 }) {
-  const built = new Set(architecture.nodes.map((node) => node.type));
+  const built = new Set(architecture.nodes.filter((node) => !nodeCatalog[node.type].multiple).map((node) => node.type));
   return (
     <aside className="build-dock" aria-label="Build">
       <div className="dock-heading">

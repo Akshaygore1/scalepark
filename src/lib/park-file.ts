@@ -1,10 +1,14 @@
 import {
   ARCHITECTURE_VERSION,
+  capabilities,
+  defaultCall,
   defaultConfig,
   nodeTypes,
   sizes,
   type Architecture,
+  type CallConfig,
   type NodeType,
+  type ParkEdge,
   type ParkNode,
 } from "./model";
 
@@ -22,10 +26,18 @@ const enums: Record<string, readonly string[]> = {
   archiveAfter: ["never", "1y", "90d"],
   partitioning: ["none", "monthly"],
   shardKey: ["created-at", "hash"],
+  capabilities,
 };
 
 /** A value matches when it has exactly the shape of the default configuration. */
 function matchesShape(value: unknown, template: unknown, key = ""): boolean {
+  if (Array.isArray(template)) {
+    return (
+      Array.isArray(value) &&
+      new Set(value).size === value.length &&
+      value.every((item) => typeof item === "string" && (enums[key]?.includes(item) ?? false))
+    );
+  }
   if (typeof template === "number") return typeof value === "number" && Number.isFinite(value);
   if (typeof template === "boolean") return typeof value === "boolean";
   if (typeof template === "string") {
@@ -54,23 +66,47 @@ function isNode(value: unknown): value is ParkNode {
   );
 }
 
-export function isArchitecture(value: unknown): value is Architecture {
+function isCall(value: unknown): value is CallConfig {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Record<string, unknown>;
+  const call = value as Record<string, unknown>;
   return (
-    candidate.version === ARCHITECTURE_VERSION &&
+    Object.keys(call).length === Object.keys(defaultCall).length &&
+    (call.mode === "sync" || call.mode === "async") &&
+    typeof call.timeoutMs === "number" &&
+    Number.isFinite(call.timeoutMs) &&
+    typeof call.retries === "number" &&
+    Number.isFinite(call.retries) &&
+    typeof call.backoff === "boolean" &&
+    typeof call.circuitBreaker === "boolean" &&
+    typeof call.fallback === "boolean"
+  );
+}
+
+function isEdge(value: unknown): value is ParkEdge {
+  if (!value || typeof value !== "object") return false;
+  const edge = value as Record<string, unknown>;
+  return (
+    typeof edge.id === "string" &&
+    typeof edge.source === "string" &&
+    typeof edge.target === "string" &&
+    (edge.call === undefined || isCall(edge.call))
+  );
+}
+
+/**
+ * Read a saved or imported park. Version 3 parks predate services and call settings,
+ * so every one of them is also a valid version 4 park.
+ */
+export function parseArchitecture(value: unknown): Architecture | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Record<string, unknown>;
+  const valid =
+    (candidate.version === ARCHITECTURE_VERSION || candidate.version === 3) &&
     Array.isArray(candidate.nodes) &&
     candidate.nodes.every(isNode) &&
     Array.isArray(candidate.edges) &&
-    candidate.edges.every(
-      (edge) =>
-        edge &&
-        typeof edge === "object" &&
-        typeof edge.id === "string" &&
-        typeof edge.source === "string" &&
-        typeof edge.target === "string",
-    )
-  );
+    candidate.edges.every(isEdge);
+  return valid ? ({ ...candidate, version: ARCHITECTURE_VERSION } as Architecture) : undefined;
 }
 
 export function exportPark(architecture: Architecture) {
@@ -84,8 +120,7 @@ export function importPark(serialized: string): Architecture {
   } catch {
     throw new Error("This file is not valid JSON.");
   }
-  if (!isArchitecture(candidate)) {
-    throw new Error(`This is not a ScaleLab park file (version ${ARCHITECTURE_VERSION}).`);
-  }
-  return candidate;
+  const park = parseArchitecture(candidate);
+  if (!park) throw new Error(`This is not a ScaleLab park file (version ${ARCHITECTURE_VERSION}).`);
+  return park;
 }

@@ -1,7 +1,10 @@
 import {
+  ARCHITECTURE_VERSION,
+  createEdge,
   createNode,
   park,
   type Architecture,
+  type CallConfig,
   type NodeConfigs,
   type NodeType,
   type ParkNode,
@@ -31,3 +34,25 @@ export function standardPark(spec: ParkSpec): Architecture {
 }
 
 export const clientsOnly = () => standardPark({});
+
+export type ServiceSpec = Partial<NodeConfigs["service"]> & { call?: Partial<CallConfig> };
+
+/**
+ * Build a park of services. The first service is the entry that clients connect to;
+ * it calls each later service, with that service's call settings.
+ */
+export function servicePark(entry: Partial<NodeConfigs["service"]>, ...others: Array<ServiceSpec>): Architecture {
+  const client = createNode("client");
+  const front = createNode("service", entry, { x: 470, y: 250 });
+  const rest = others.map(({ call: _call, ...config }, index) =>
+    createNode("service", config, { x: 780, y: 250 + (index - (others.length - 1) / 2) * 150 }),
+  );
+  return {
+    version: ARCHITECTURE_VERSION,
+    nodes: [client, front, ...rest],
+    edges: [
+      createEdge(client, front),
+      ...rest.map((node, index) => createEdge(front, node, others[index]!.call)),
+    ],
+  };
+}

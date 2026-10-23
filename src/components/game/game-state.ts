@@ -1,6 +1,7 @@
 import type { SimLevel } from "@/lib/curriculum";
 import type { Outcome } from "@/lib/evaluate";
-import type { Architecture, NodeType } from "@/lib/model";
+import type { Architecture } from "@/lib/model";
+import type { ServiceScenario } from "@/lib/services";
 import type { Scenario, SimulationResult } from "@/lib/simulation";
 
 export type Dialog =
@@ -23,11 +24,12 @@ export type Run = {
 
 export type Phase = "planning" | "running" | "paused" | "finished";
 export type Speed = 1 | 2 | 4;
-export type Prediction = NodeType | "none";
+/** A building id, or "none" for nothing breaking. */
+export type Prediction = string;
 
 export type GameState = {
   architecture: Architecture;
-  scenario: Scenario;
+  scenario: Scenario | ServiceScenario;
   selectedId: string | null;
   connectionSource: string | null;
   phase: Phase;
@@ -61,7 +63,7 @@ export type GameAction =
   | { type: "toggle-hint" }
   | { type: "predict"; prediction: Prediction }
   | { type: "notice"; notice: string }
-  | { type: "scenario"; scenario: Scenario };
+  | { type: "scenario"; scenario: Scenario | ServiceScenario };
 
 export function initialGameState(
   level: SimLevel,

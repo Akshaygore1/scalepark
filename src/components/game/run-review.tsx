@@ -2,7 +2,6 @@ import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { formatClock } from "@/lib/evaluate";
-import { nodeCatalog, type NodeType } from "@/lib/model";
 import type { SimEvent, SimulationResult, Snapshot } from "@/lib/simulation";
 
 const metrics = [
@@ -18,11 +17,13 @@ type MetricKey = (typeof metrics)[number]["key"];
 
 export function RunReview({
   result,
+  labels,
   second,
   onSeek,
   onClose,
 }: {
   result: SimulationResult;
+  labels: ReadonlyMap<string, string>;
   second: number;
   onSeek: (second: number) => void;
   onClose: () => void;
@@ -106,7 +107,9 @@ export function RunReview({
         <div className="review-columns">
           <div className="review-main-column">
             <div className="review-chart-grid">
-              {metrics.map((metric) => (
+              {metrics
+                .filter((metric) => ["demand", "availability", "p95", "cost"].includes(metric.key) || snapshots.some((item) => metric.read(item) > 0))
+                .map((metric) => (
                 <Sparkline
                   key={metric.key}
                   label={metric.label}
@@ -129,11 +132,11 @@ export function RunReview({
                 </tr>
               </thead>
               <tbody>
-                {(Object.entries(current.nodes) as Array<[NodeType, NonNullable<Snapshot["nodes"][NodeType]>]>)
-                  .filter(([type]) => type !== "client")
-                  .map(([type, node]) => (
-                    <tr key={type} className={`state-${node.health}`}>
-                      <th scope="row">{nodeCatalog[type].label}</th>
+                {Object.entries(current.nodes)
+                  .filter(([id]) => labels.has(id))
+                  .map(([id, node]) => (
+                    <tr key={id} className={`state-${node.health}`}>
+                      <th scope="row">{labels.get(id)}</th>
                       <td>{node.load.toLocaleString()}</td>
                       <td>{Number.isFinite(node.capacity) ? node.capacity.toLocaleString() : "∞"}</td>
                       <td>{Number.isFinite(node.capacity) ? `${Math.round(Math.min(9.99, node.utilization) * 100)}%` : "-"}</td>

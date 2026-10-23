@@ -208,6 +208,17 @@
 .module-stop + .module-stop {
   margin-top: 8px;
 }
+.part-stop + .part-stop {
+  margin-top: 18px;
+}
+.part-heading {
+  margin: 0 0 8px;
+  color: var(--park-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 .module-stop > header {
   position: sticky;
   z-index: 1;

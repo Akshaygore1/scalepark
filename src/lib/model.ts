@@ -1,4 +1,4 @@
-export const ARCHITECTURE_VERSION = 3 as const;
+export const ARCHITECTURE_VERSION = 4 as const;
 
 export const nodeTypes = [
   "client",
@@ -11,6 +11,7 @@ export const nodeTypes = [
   "worker",
   "pubsub",
   "archive",
+  "service",
 ] as const;
 export type NodeType = (typeof nodeTypes)[number];
 
@@ -54,7 +55,49 @@ export type DatabaseConfig = {
 export type ReplicaConfig = { size: Size; instances: number };
 export type QueueConfig = { deadLetter: boolean };
 export type WorkerConfig = { instances: number; idempotent: boolean };
+export type ServiceConfig = {
+  size: Size;
+  instances: number;
+  /** The parts of the product this service runs. Each capability lives in exactly one service. */
+  capabilities: Capability[];
+  /** Rows that click counters are spread across. */
+  counterShards: number;
+  /** Lock leases expire after this many seconds unless renewed. */
+  leaseSeconds: number;
+  /** Storage rejects writes that carry an older lock token than one it has seen. */
+  fencing: boolean;
+};
 export type EmptyConfig = Record<string, never>;
+
+/** The parts of the link shortener that services can own once it is split up. */
+export const capabilities = ["links", "safety", "geo", "analytics", "accounts", "billing", "locks"] as const;
+export type Capability = (typeof capabilities)[number];
+
+export const capabilityCatalog: Record<
+  Capability,
+  { label: string; work: number; ms: number; fallback?: string }
+> = {
+  links: { label: "Links", work: 1, ms: 3 },
+  safety: { label: "Link safety", work: 0.5, ms: 3 },
+  geo: { label: "Geo lookup", work: 0.3, ms: 2 },
+  analytics: { label: "Analytics", work: 0.4, ms: 2 },
+  accounts: { label: "Accounts", work: 0.5, ms: 2 },
+  billing: { label: "Billing", work: 0.8, ms: 4, fallback: "Assume the free plan" },
+  locks: { label: "Alias locks", work: 0.2, ms: 1 },
+};
+
+/** How one service calls another. */
+export type CallConfig = {
+  mode: "sync" | "async";
+  /** 0 waits forever. */
+  timeoutMs: number;
+  retries: number;
+  /** Exponential backoff with jitter, capped by a retry budget. */
+  backoff: boolean;
+  circuitBreaker: boolean;
+  /** Answer with a default when the call fails, if the capability has one. */
+  fallback: boolean;
+};
 
 export type NodeConfigs = {
   client: EmptyConfig;
@@ -67,6 +110,7 @@ export type NodeConfigs = {
   worker: WorkerConfig;
   pubsub: EmptyConfig;
   archive: EmptyConfig;
+  service: ServiceConfig;
 };
 
 export type ParkNodeOf<T extends NodeType> = {
@@ -78,7 +122,7 @@ export type ParkNodeOf<T extends NodeType> = {
 };
 export type ParkNode = { [T in NodeType]: ParkNodeOf<T> }[NodeType];
 
-export type ParkEdge = { id: string; source: string; target: string };
+export type ParkEdge = { id: string; source: string; target: string; call?: CallConfig };
 
 export type Architecture = {
   version: typeof ARCHITECTURE_VERSION;
@@ -109,6 +153,14 @@ export const features = [
   "archive-after",
   "partitioning",
   "shards",
+  "capabilities",
+  "async",
+  "timeouts",
+  "retries",
+  "circuit-breaker",
+  "fallback",
+  "counter-shards",
+  "locks",
 ] as const;
 export type Feature = (typeof features)[number];
 
@@ -145,10 +197,15 @@ export const WORKER_CAPACITY = 800;
 export const WORKER_COST = 50;
 export const MAX_INSTANCES = 12;
 export const MAX_SHARDS = 8;
+/** Requests one service instance can hold open at once, waiting or working. */
+export const SERVICE_THREADS: Record<Size, number> = { S: 100, M: 200, L: 400, XL: 700 };
+/** Writes per second one counter row can take before writers queue on its lock. */
+export const COUNTER_ROW_WRITES = 1_000;
+export const MAX_COUNTER_SHARDS = 16;
 
 export const nodeCatalog: Record<
   NodeType,
-  { label: string; short: string; role: string; complexity: number }
+  { label: string; short: string; role: string; complexity: number; multiple?: boolean }
 > = {
   client: { label: "Clients", short: "Clients", role: "People and apps sending requests.", complexity: 0 },
   "load-balancer": {
@@ -205,6 +262,13 @@ export const nodeCatalog: Record<
     role: "Cheap, slow storage for data that is rarely read.",
     complexity: 1,
   },
+  service: {
+    label: "Service",
+    short: "Service",
+    role: "Runs part of the product, with its own servers, data, and deploys.",
+    complexity: 1,
+    multiple: true,
+  },
 };
 
 export const buildCost: Record<NodeType, number> = {
@@ -218,10 +282,11 @@ export const buildCost: Record<NodeType, number> = {
   worker: WORKER_COST,
   pubsub: 40,
   archive: 10,
+  service: API_COST.M,
 };
 
 const allowedTargets: Record<NodeType, readonly NodeType[]> = {
-  client: ["load-balancer", "api"],
+  client: ["load-balancer", "api", "service"],
   "load-balancer": ["api"],
   api: ["cache", "database", "replica", "queue", "pubsub"],
   cache: [],
@@ -231,6 +296,7 @@ const allowedTargets: Record<NodeType, readonly NodeType[]> = {
   worker: ["database"],
   pubsub: [],
   archive: [],
+  service: ["service"],
 };
 
 export function canConnect(source: NodeType, target: NodeType) {
@@ -273,6 +339,7 @@ export function defaultConfig<T extends NodeType>(type: T): NodeConfigs[T] {
     worker: { instances: 1, idempotent: false },
     pubsub: {},
     archive: {},
+    service: { size: "M", instances: 1, capabilities: [], counterShards: 1, leaseSeconds: 10, fencing: false },
   };
   return structuredClone(configs[type]);
 }
@@ -300,6 +367,8 @@ export function nodeMonthlyCost(node: ParkNode, runningInstances?: number): numb
       return 40;
     case "archive":
       return 10;
+    case "service":
+      return API_COST[node.config.size] * node.config.instances;
   }
 }
 
@@ -313,12 +382,22 @@ export function nodeComplexity(node: ParkNode): number {
   return points;
 }
 
+/** The name shown on a building. Services are named after what they run. */
+export function nodeLabel(node: ParkNode) {
+  if (node.type !== "service") return nodeCatalog[node.type].label;
+  return node.config.capabilities.length
+    ? node.config.capabilities.map((capability) => capabilityCatalog[capability].label).join(" + ")
+    : "Empty service";
+}
+
 export function architectureMonthlyCost(architecture: Architecture) {
   return architecture.nodes.reduce((total, node) => total + nodeMonthlyCost(node), 0);
 }
 
+/** Each building adds complexity, and so does each message queue between services. */
 export function architectureComplexity(architecture: Architecture) {
-  return architecture.nodes.reduce((total, node) => total + nodeComplexity(node), 0);
+  const queues = architecture.edges.filter((edge) => edge.call?.mode === "async").length;
+  return architecture.nodes.reduce((total, node) => total + nodeComplexity(node), queues);
 }
 
 export function findNode<T extends NodeType>(
@@ -348,6 +427,7 @@ export const nodePositions: Record<NodeType, { x: number; y: number }> = {
   worker: { x: 800, y: 480 },
   pubsub: { x: 590, y: 90 },
   archive: { x: 990, y: 190 },
+  service: { x: 640, y: 250 },
 };
 
 export function createNode<T extends NodeType>(
@@ -364,8 +444,19 @@ export function createNode<T extends NodeType>(
   };
 }
 
-export function createEdge(source: ParkNode, target: ParkNode): ParkEdge {
-  return { id: `${source.type}-${target.type}`, source: source.id, target: target.id };
+export const defaultCall: CallConfig = {
+  mode: "sync",
+  timeoutMs: 0,
+  retries: 0,
+  backoff: false,
+  circuitBreaker: false,
+  fallback: false,
+};
+
+export function createEdge(source: ParkNode, target: ParkNode, call?: Partial<CallConfig>): ParkEdge {
+  const edge: ParkEdge = { id: `${source.id}-${target.id}`, source: source.id, target: target.id };
+  if (source.type === "service" && target.type === "service") edge.call = { ...defaultCall, ...call };
+  return edge;
 }
 
 /** Assemble a park from nodes and type-level routes. */

@@ -3,14 +3,18 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useNavigate } from "react-router";
 
 import { moduleFor, nextLevel, type SimLevel } from "@/lib/curriculum";
+import { runScenario, validateFor } from "@/lib/engine";
 import { evaluateRun } from "@/lib/evaluate";
 import {
   architectureComplexity,
   architectureMonthlyCost,
   canConnect,
+  capabilities,
   createEdge,
   createNode,
   nodeCatalog,
+  nodeLabel,
+  nodePositions,
   type Architecture,
   type NodeConfigs,
   type NodeType,
@@ -18,8 +22,6 @@ import {
 } from "@/lib/model";
 import { exportPark, importPark } from "@/lib/park-file";
 import { forgetPark, recordResult, savePark } from "@/lib/progress";
-import { runSimulation } from "@/lib/simulation";
-import { validatePark } from "@/lib/topology";
 
 import { updateProgress, useProgress } from "../progress-store";
 import { JournalDialog, OutcomeDialog, PredictionDialog, QuizDialog, RefresherDialog } from "./dialogs";
@@ -55,7 +57,12 @@ export function GameScreen({ level }: { level: SimLevel }) {
   const recordedRun = useRef<unknown>(null);
 
   const features = useMemo(() => new Set(level.unlocks.features), [level]);
-  const validation = useMemo(() => validatePark(state.architecture), [state.architecture]);
+  const capabilityOptions = useMemo(() => {
+    const scenario = level.scenario;
+    const used = new Set("kind" in scenario ? scenario.operations.flatMap((operation) => operation.steps) : []);
+    return capabilities.filter((capability) => used.has(capability));
+  }, [level]);
+  const validation = useMemo(() => validateFor(state.architecture, level.scenario), [level.scenario, state.architecture]);
   const monthlyCost = architectureMonthlyCost(state.architecture);
   const complexity = architectureComplexity(state.architecture);
   const run = state.run;
@@ -107,13 +114,13 @@ export function GameScreen({ level }: { level: SimLevel }) {
       return;
     }
     const architecture = structuredClone(state.architecture);
-    const result = runSimulation(architecture, isSandbox ? sandboxScenario(sandbox) : level.scenario);
+    const result = runScenario(architecture, isSandbox ? sandboxScenario(sandbox) : level.scenario);
     dispatch({ type: "start-run", run: { result, architecture, outcome: evaluateRun(level, architecture, result), second: 0 } });
   }
 
   const predictionOptions = state.architecture.nodes
-    .map((node) => node.type)
-    .filter((type) => type !== "client");
+    .filter((node) => node.type !== "client")
+    .map((node) => ({ id: node.id, label: nodeLabel(node) }));
 
   function play() {
     if (state.phase === "running") return dispatch({ type: "pause" });
@@ -126,11 +133,12 @@ export function GameScreen({ level }: { level: SimLevel }) {
   }
 
   function build(type: NodeType, position?: { x: number; y: number }) {
-    if (state.architecture.nodes.some((node) => node.type === type)) {
+    if (!nodeCatalog[type].multiple && state.architecture.nodes.some((node) => node.type === type)) {
       dispatch({ type: "notice", notice: `There is already a ${nodeCatalog[type].label.toLowerCase()}. Scale it from its settings.` });
       return;
     }
-    const node = createNode(type, {}, position) as ParkNode;
+    const copies = state.architecture.nodes.filter((node) => node.type === type).length;
+    const node = createNode(type, {}, position ?? { x: nodePositions[type].x + copies * 36, y: nodePositions[type].y + copies * 36 }) as ParkNode;
     edit((architecture) => ({ ...architecture, nodes: [...architecture.nodes, node] }), `${nodeCatalog[type].label} built. Drag its arrow to connect it.`);
     dispatch({ type: "select", nodeId: node.id });
   }
@@ -150,7 +158,7 @@ export function GameScreen({ level }: { level: SimLevel }) {
             ? architecture.edges
             : [...architecture.edges, createEdge(source, target)],
         }),
-        `Routed ${nodeCatalog[source.type].label} → ${nodeCatalog[target.type].label}.`,
+        `Routed ${nodeLabel(source)} → ${nodeLabel(target)}.`,
       );
       dispatch({ type: "connection-source", nodeId: null });
     },
@@ -161,7 +169,7 @@ export function GameScreen({ level }: { level: SimLevel }) {
     (sourceId: string) => {
       const source = state.architecture.nodes.find((node) => node.id === sourceId);
       if (!source || !editable) return;
-      dispatch({ type: "connection-source", nodeId: sourceId, notice: `Choose where ${nodeCatalog[source.type].label} sends traffic. Escape cancels.` });
+      dispatch({ type: "connection-source", nodeId: sourceId, notice: `Choose where ${nodeLabel(source)} sends traffic. Escape cancels.` });
     },
     [editable, state.architecture.nodes],
   );
@@ -185,6 +193,13 @@ export function GameScreen({ level }: { level: SimLevel }) {
       "Building removed.",
     );
     dispatch({ type: "select", nodeId: null });
+  }
+
+  function configureRoute(edgeId: string, change: Partial<NonNullable<Architecture["edges"][number]["call"]>>) {
+    edit((architecture) => ({
+      ...architecture,
+      edges: architecture.edges.map((edge) => (edge.id === edgeId && edge.call ? { ...edge, call: { ...edge.call, ...change } } : edge)),
+    }));
   }
 
   function configure(nodeId: string, change: Partial<NodeConfigs[NodeType]>) {
@@ -226,6 +241,7 @@ export function GameScreen({ level }: { level: SimLevel }) {
     }
   }
 
+  const labels = new Map(state.architecture.nodes.map((node) => [node.id, nodeLabel(node)]));
   const firstSaturated = run?.result.totals.firstSaturated?.node;
 
   return (
@@ -303,9 +319,11 @@ export function GameScreen({ level }: { level: SimLevel }) {
             node={selected}
             architecture={state.architecture}
             features={features}
-            metrics={snapshot?.nodes[selected.type]}
+            metrics={snapshot?.nodes[selected.id]}
             editable={editable}
+            capabilityOptions={capabilityOptions}
             onChange={(change) => configure(selected.id, change)}
+            onRouteChange={configureRoute}
             onRemove={() => remove(selected.id)}
             onDisconnect={disconnect}
             onClose={() => dispatch({ type: "select", nodeId: null })}
@@ -344,7 +362,7 @@ export function GameScreen({ level }: { level: SimLevel }) {
       )}
       {dialog?.kind === "prediction" && (
         <PredictionDialog
-          options={[...new Set(predictionOptions)]}
+          options={predictionOptions}
           onPredict={(prediction: Prediction) => {
             dispatch({ type: "predict", prediction });
             dispatch({ type: "close" });
@@ -357,6 +375,7 @@ export function GameScreen({ level }: { level: SimLevel }) {
           outcome={run.outcome}
           prediction={state.attempts === 1 ? state.prediction : null}
           firstSaturated={firstSaturated}
+          labels={labels}
           isSandbox={isSandbox}
           hasNext={Boolean(next)}
           onReview={() => dispatch({ type: "open", dialog: { kind: "review" } })}
@@ -368,6 +387,7 @@ export function GameScreen({ level }: { level: SimLevel }) {
       {dialog?.kind === "review" && run && (
         <RunReview
           result={run.result}
+          labels={new Map(run.architecture.nodes.filter((node) => node.type !== "client").map((node) => [node.id, nodeLabel(node)]))}
           second={run.second}
           onSeek={(target) => dispatch({ type: "seek", second: target })}
           onClose={() => dispatch({ type: "close" })}

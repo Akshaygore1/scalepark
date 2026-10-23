@@ -1,4 +1,5 @@
 import type { Architecture, Feature, NodeType } from "../model";
+import type { ServiceScenario } from "../services";
 import type { Scenario } from "../simulation";
 
 /** A short explanation from Mina, the park's systems coach. */
@@ -28,7 +29,11 @@ export type Target =
   | { kind: "freshness"; maxSeconds: number }
   | { kind: "missed-updates"; max: number }
   | { kind: "analytics-delay"; maxSeconds: number }
-  | { kind: "backlog-drained" };
+  | { kind: "backlog-drained" }
+  /** Availability of one operation in a park of services, such as redirects or sign-ups. */
+  | { kind: "operation-availability"; operation: string; label: string; min: number }
+  | { kind: "clicks-lost"; max: number }
+  | { kind: "double-claims"; max: number };
 
 type LevelBase = {
   id: string;
@@ -48,7 +53,7 @@ export type SimLevel = LevelBase & {
   brief: string;
   unlocks: { nodes: NodeType[]; features: Feature[] };
   start: () => Architecture;
-  scenario: Scenario;
+  scenario: Scenario | ServiceScenario;
   targets: Target[];
   /** Stars two and three: stay within the cost and complexity of a lean solution. */
   par: { monthly: number; complexity: number };

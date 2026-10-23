@@ -23,6 +23,8 @@ export type Topology = {
   active: Set<NodeType>;
 };
 
+export type ValidationSummary = { ok: boolean; errors: string[]; warnings: string[] };
+
 export type Validation =
   | { ok: true; topology: Topology; errors: []; warnings: string[] }
   | { ok: false; topology?: undefined; errors: string[]; warnings: string[] };

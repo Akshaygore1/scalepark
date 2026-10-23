@@ -1,6 +1,7 @@
 import {
   Archive,
   Boxes,
+  Container,
   Database,
   HardDrive,
   Network,
@@ -25,6 +26,7 @@ export const buildingLook: Record<NodeType, { icon: LucideIcon; color: string }>
   worker: { icon: TimerReset, color: "green" },
   pubsub: { icon: Radio, color: "sky" },
   archive: { icon: Archive, color: "stone" },
+  service: { icon: Container, color: "coral" },
 };
 
 export function formatMoney(value: number) {

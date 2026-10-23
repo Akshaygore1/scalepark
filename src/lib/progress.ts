@@ -1,6 +1,6 @@
 import { levels } from "./curriculum";
 import type { Architecture } from "./model";
-import { isArchitecture } from "./park-file";
+import { parseArchitecture } from "./park-file";
 
 export const PROGRESS_VERSION = 3 as const;
 export const progressStorageKey = "scalelab:progress";
@@ -42,9 +42,10 @@ export function restoreProgress(storage: Pick<Storage, "getItem">): Progress {
     const records = Object.entries(candidate.levels ?? {}).filter(
       ([id, record]) => known.has(id) && isLevelRecord(record),
     );
-    const parks = Object.entries(candidate.parks ?? {}).filter(
-      ([id, park]) => known.has(id) && isArchitecture(park),
-    );
+    const parks = Object.entries(candidate.parks ?? {}).flatMap(([id, value]) => {
+      const park = known.has(id) ? parseArchitecture(value) : undefined;
+      return park ? [[id, park] as const] : [];
+    });
     return {
       version: PROGRESS_VERSION,
       levels: Object.fromEntries(records),

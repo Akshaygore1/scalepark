@@ -283,6 +283,11 @@ body:has(.tycoon-shell) {
   stroke: #d75b4f;
   stroke-dasharray: 10 12;
 }
+/* Messages through a queue: the caller does not wait. */
+.route-line.async {
+  stroke: #cfeaff;
+  stroke-dasharray: 2 11;
+}
 .route-shadow.selected {
   stroke: #214d45;
   opacity: 0.72;
@@ -604,6 +609,7 @@ body:has(.tycoon-shell) {
   border: 2px solid var(--park-line);
   border-radius: 8px;
   background: var(--park-paper);
+  max-width: 150px;
   line-height: 1.1;
   white-space: nowrap;
 }
@@ -1315,6 +1321,7 @@ body:has(.tycoon-shell) {
 }
 .inspector-route-config {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -1334,7 +1341,11 @@ body:has(.tycoon-shell) {
   color: var(--park-ink);
   font-size: 11px;
 }
-.inspector-route-config button {
+.inspector-route-config > .inspector-config {
+  flex: 1 0 100%;
+  order: 2;
+}
+.inspector-route-config > button {
   min-height: 34px;
   display: inline-flex;
   align-items: center;
@@ -1346,11 +1357,11 @@ body:has(.tycoon-shell) {
   font-size: 10px;
   font-weight: 800;
 }
-.inspector-route-config button:hover {
+.inspector-route-config > button:hover {
   border-color: #d9a39a;
   background: #fff1e9;
 }
-.inspector-route-config button svg {
+.inspector-route-config > button svg {
   width: 14px;
 }
 .inspector-actions {
