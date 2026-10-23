@@ -35,7 +35,7 @@ export const capstone: CurriculumModule = {
         durationSeconds: 60,
         traffic: {
           redirects: [[0, 2_200], [15, 2_400], [22, 5_200], [40, 5_400], [50, 3_000], [60, 2_800]],
-          hotKey: [[0, 0], [20, 0], [22, 2_400], [42, 2_400], [48, 0]],
+          hotKey: [[0, 0], [20, 0], [22, 4_000], [42, 4_000], [48, 0]],
           creates: [[0, 60]],
           edits: [[0, 15]],
           dashboard: [[0, 300]],
@@ -63,9 +63,9 @@ export const capstone: CurriculumModule = {
         { kind: "freshness", maxSeconds: 2 },
         { kind: "analytics-delay", maxSeconds: 15 },
         { kind: "backlog-drained" },
-        { kind: "budget", maxMonthly: 2_200 },
+        { kind: "budget", maxMonthly: 1_800 },
       ],
-      par: { monthly: 1_900, complexity: 9 },
+      par: { monthly: 1_700, complexity: 9 },
       hints: [
         "Run the simplest design first and read which target fails.",
         "Each target maps to a module: latency to caching and scaling, live counters to push and pub/sub, clicks to queues, bots to rate limits.",

@@ -227,7 +227,7 @@ export const scalingDatabases: CurriculumModule = {
         incidents: [{ at: 20, type: "table-drop" }],
       },
       targets: [
-        { kind: "availability", min: 0.85 },
+        { kind: "availability", min: 0.95 },
         { kind: "lost-links", max: 10_000 },
         { kind: "budget", maxMonthly: 1_000 },
       ],
