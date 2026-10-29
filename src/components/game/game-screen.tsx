@@ -1,4 +1,3 @@
-import { Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
@@ -31,6 +30,7 @@ import {
   EventTicker,
   GameHud,
   MissionRail,
+  ParkMetrics,
   SandboxControls,
   defaultSandbox,
   sandboxScenario,
@@ -222,48 +222,20 @@ export function GameScreen({ level }: { level: SimLevel }) {
   return (
     <main className="tycoon-shell">
       <GameHud
-        level={level}
         phase={state.phase}
-        speed={state.speed}
-        snapshot={snapshot}
-        second={second}
-        duration={(isSandbox ? 60 : level.scenario.durationSeconds) - 1}
-        monthlyCost={monthlyCost}
-        complexity={complexity}
-        budget={budget?.kind === "budget" ? budget.maxMonthly : undefined}
         hasRun={run !== null}
-        hints={level.hints}
-        hintsShown={state.hintsShown}
-        hintOpen={state.hintOpen}
         onExit={() => navigate("/")}
         onPlay={play}
         onStop={() => dispatch({ type: "stop" })}
-        onSpeed={(speed) => dispatch({ type: "speed", speed })}
         onReview={() => {
           if (state.phase === "running") dispatch({ type: "pause" });
           dispatch({ type: "open", dialog: { kind: "review" } });
         }}
-        onHint={() => dispatch({ type: "hint" })}
-        onToggleHint={() => dispatch({ type: "toggle-hint" })}
         onJournal={() => dispatch({ type: "open", dialog: { kind: "journal" } })}
         onReset={reset}
       />
 
-      <section className="game-stage" aria-label="ScaleLab technology park">
-        <ParkMap
-          architecture={state.architecture}
-          snapshot={snapshot}
-          selectedId={state.selectedId}
-          connectionSource={state.connectionSource}
-          editable={editable}
-          onBuild={build}
-          onCancelConnection={cancelConnection}
-          onConnect={connect}
-          onConnectionSource={beginConnection}
-          onDisconnect={disconnect}
-          onMove={(nodeId, position) => dispatch({ type: "move", nodeId, ...position })}
-          onSelect={(nodeId) => dispatch({ type: "select", nodeId })}
-        />
+      <section className={`game-stage ${selected ? "has-inspector" : ""}`} aria-label="ScaleLab technology park">
         <div className="stage-left">
           <MissionRail
             level={level}
@@ -273,10 +245,32 @@ export function GameScreen({ level }: { level: SimLevel }) {
             second={second}
             finalTargets={run?.outcome.targets}
             warnings={validation.ok ? validation.warnings : validation.errors}
+            monthlyCost={snapshot?.monthlyCost ?? monthlyCost}
+            budget={budget?.kind === "budget" ? budget.maxMonthly : undefined}
+            hintsShown={state.hintsShown}
+            hintOpen={state.hintOpen}
+            onHint={() => dispatch({ type: "hint" })}
+            onToggleHint={() => dispatch({ type: "toggle-hint" })}
           />
-          <BuildDock level={level} architecture={state.architecture} editable={editable} onBuild={(type) => build(type)} />
+          {isSandbox && <SandboxControls settings={sandbox} editable={editable} onChange={setSandbox} />}
         </div>
-        {isSandbox && <SandboxControls settings={sandbox} editable={editable} onChange={setSandbox} />}
+        <div className="park-workspace">
+          <ParkMetrics snapshot={snapshot} complexity={complexity} />
+          <ParkMap
+            architecture={state.architecture}
+            snapshot={snapshot}
+            selectedId={state.selectedId}
+            connectionSource={state.connectionSource}
+            editable={editable}
+            onBuild={build}
+            onCancelConnection={cancelConnection}
+            onConnect={connect}
+            onConnectionSource={beginConnection}
+            onDisconnect={disconnect}
+            onMove={(nodeId, position) => dispatch({ type: "move", nodeId, ...position })}
+            onSelect={(nodeId) => dispatch({ type: "select", nodeId })}
+          />
+        </div>
         {selected && (
           <Inspector
             node={selected}
@@ -292,11 +286,23 @@ export function GameScreen({ level }: { level: SimLevel }) {
             onClose={() => dispatch({ type: "select", nodeId: null })}
           />
         )}
-        <div className="park-notice" role="status">
-          <Sparkles size={14} /> {state.notice}
-        </div>
-        <EventTicker second={second} result={run?.result} phase={state.phase} />
       </section>
+      <BuildDock
+        level={level}
+        architecture={state.architecture}
+        editable={editable}
+        onBuild={(type) => build(type)}
+        onSelect={(nodeId) => dispatch({ type: "select", nodeId })}
+      />
+      <EventTicker
+        second={second}
+        duration={(isSandbox ? 60 : level.scenario.durationSeconds) - 1}
+        result={run?.result}
+        phase={state.phase}
+        notice={state.notice}
+        speed={state.speed}
+        onSpeed={(speed) => dispatch({ type: "speed", speed })}
+      />
 
       {dialog?.kind === "refresher" && (
         <RefresherDialog

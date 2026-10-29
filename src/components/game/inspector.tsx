@@ -1,5 +1,5 @@
 import { Activity, Minus, Plus, Trash2, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   API_CAPACITY,
@@ -32,7 +32,7 @@ import {
 } from "@/lib/model";
 import type { NodeSnapshot } from "@/lib/simulation";
 
-import { buildingLook, formatMoney } from "./buildings";
+import { formatMoney } from "./buildings";
 
 type Change = (config: Partial<NodeConfigs[ParkNode["type"]]>) => void;
 
@@ -62,7 +62,10 @@ export function Inspector({
   onDisconnect: (edgeId: string) => void;
   onClose: () => void;
 }) {
-  const { icon: Icon, color } = buildingLook[node.type];
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (window.matchMedia("(max-width: 1399px)").matches) panelRef.current?.scrollIntoView({ block: "nearest" });
+  }, [node.id]);
   const [section, setSection] = useState<"settings" | "routes" | null>("settings");
   useEffect(() => setSection("settings"), [node.id]);
   const routes = architecture.edges
@@ -71,38 +74,39 @@ export function Inspector({
   const settings = settingsFor(node, architecture, features, capabilityOptions, editable, onChange);
   const health = metrics?.health ?? "ready";
   return (
-    <aside className="building-inspector" aria-label={`${nodeLabel(node)} controls`}>
+    <aside ref={panelRef} className="building-inspector" aria-label={`${nodeLabel(node)} controls`}>
       <header className="inspector-header">
         <div className="inspector-header-main">
-          <div className={`inspector-avatar ${color}`}>
-            <Icon />
-          </div>
           <div className="inspector-identity">
             <span className="inspector-kicker">{formatMoney(nodeMonthlyCost(node))}/mo · complexity {nodeComplexity(node)}</span>
             <h2>{nodeLabel(node)}</h2>
-            <div className={`inspector-health status-${health}`}>
-              <Activity />
-              <span>{health === "saturated" ? "overloaded" : health}</span>
-            </div>
+            {metrics && (
+              <div className={`inspector-health status-${health}`}>
+                <Activity />
+                <span>{health === "saturated" ? "overloaded" : health}</span>
+              </div>
+            )}
           </div>
           <button className="inspector-close" type="button" onClick={onClose} aria-label="Close building controls">
             <X />
           </button>
         </div>
-        <dl className="inspector-overview">
-          <div>
-            <dt>Load</dt>
-            <dd>{metrics ? metrics.load.toLocaleString() : "-"}</dd>
-          </div>
-          <div>
-            <dt>Capacity</dt>
-            <dd>{metrics ? (Number.isFinite(metrics.capacity) ? metrics.capacity.toLocaleString() : "∞") : "-"}</dd>
-          </div>
-          <div>
-            <dt>Busy</dt>
-            <dd>{metrics && Number.isFinite(metrics.capacity) ? `${Math.round(Math.min(9.99, metrics.utilization) * 100)}%` : "-"}</dd>
-          </div>
-        </dl>
+        {metrics && (
+          <dl className="inspector-overview">
+            <div>
+              <dt>Load</dt>
+              <dd>{metrics.load.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Capacity</dt>
+              <dd>{Number.isFinite(metrics.capacity) ? metrics.capacity.toLocaleString() : "∞"}</dd>
+            </div>
+            <div>
+              <dt>Busy</dt>
+              <dd>{Number.isFinite(metrics.capacity) ? `${Math.round(Math.min(9.99, metrics.utilization) * 100)}%` : "-"}</dd>
+            </div>
+          </dl>
+        )}
         <p className="inspector-role">{metrics?.detail ?? nodeCatalog[node.type].role}</p>
       </header>
 

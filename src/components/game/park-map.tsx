@@ -1,5 +1,5 @@
-import { ArrowRight, Trash2, Users } from "lucide-react";
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { ArrowRight, Maximize, Minus, MousePointer2, Plus, Route, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import {
   canConnect,
@@ -15,8 +15,21 @@ import type { Health, Snapshot } from "@/lib/simulation";
 import { BuildingArt } from "./building-art";
 import { buildingLook } from "./buildings";
 
-const BUILDING_WIDTH = 110;
-const BUILDING_HEIGHT = 118;
+const BUILDING_WIDTH = 120;
+const BUILDING_HEIGHT = 160;
+const CANVAS_PADDING = 60;
+
+type MapBounds = { left: number; top: number; right: number; bottom: number };
+
+function architectureBounds(architecture: Architecture): MapBounds {
+  const nodes = architecture.nodes;
+  return {
+    left: Math.max(0, Math.min(...nodes.map((node) => node.x), 290) - CANVAS_PADDING),
+    top: Math.max(0, Math.min(...nodes.map((node) => node.y), 250) - CANVAS_PADDING),
+    right: Math.max(...nodes.map((node) => node.x + BUILDING_WIDTH), 410) + CANVAS_PADDING,
+    bottom: Math.max(...nodes.map((node) => node.y + BUILDING_HEIGHT), 410) + CANVAS_PADDING,
+  };
+}
 export const DRAG_TYPE = "application/x-scalelab-building";
 
 type Gesture = {
@@ -57,6 +70,55 @@ export function ParkMap({
   onMove: (nodeId: string, position: { x: number; y: number }) => void;
   onSelect: (nodeId: string | null) => void;
 }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const architectureRef = useRef(architecture);
+  architectureRef.current = architecture;
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+  const [canvas, setCanvas] = useState(() => architectureBounds(architecture));
+  const [zoom, setZoom] = useState(1);
+  const [tool, setTool] = useState<"select" | "connect">("select");
+  const fitView = useCallback(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+    const bounds = architectureBounds(architectureRef.current);
+    setCanvas(bounds);
+    setZoom(Math.max(0.5, Math.min(1, element.clientWidth / (bounds.right - bounds.left), element.clientHeight / (bounds.bottom - bounds.top))));
+    element.scrollTo(0, 0);
+  }, []);
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      setViewport({ width: element.clientWidth, height: element.clientHeight });
+      fitView();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [fitView]);
+
+  const extraX = Math.max(0, viewport.width / zoom - (canvas.right - canvas.left)) / 2;
+  const extraY = Math.max(0, viewport.height / zoom - (canvas.bottom - canvas.top)) / 2;
+  const mapBounds = {
+    left: Math.max(0, canvas.left - extraX),
+    top: Math.max(0, canvas.top - extraY),
+    right: canvas.right + extraX,
+    bottom: canvas.bottom + extraY,
+  };
+
+  useEffect(() => {
+    const outside = architecture.nodes.some((node) =>
+      node.x < mapBounds.left || node.y < mapBounds.top ||
+      node.x + BUILDING_WIDTH > mapBounds.right || node.y + BUILDING_HEIGHT > mapBounds.bottom,
+    );
+    if (!outside) return;
+    const bounds = architectureBounds(architecture);
+    setCanvas((current) => ({
+      left: Math.min(current.left, bounds.left), top: Math.min(current.top, bounds.top),
+      right: Math.max(current.right, bounds.right), bottom: Math.max(current.bottom, bounds.bottom),
+    }));
+  }, [architecture, mapBounds.left, mapBounds.top, mapBounds.right, mapBounds.bottom]);
+
   const [dropActive, setDropActive] = useState(false);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [gesture, setGestureState] = useState<Gesture | null>(null);
@@ -64,6 +126,14 @@ export function ParkMap({
   const suppressConnectorClick = useRef<string | null>(null);
   const activeSource = gesture?.sourceId ?? connectionSource;
   const byId = new Map(architecture.nodes.map((node) => [node.id, node]));
+
+  useEffect(() => {
+    if (editable) return;
+    setTool("select");
+    setSelectedEdgeId(null);
+    gestureRef.current = null;
+    setGestureState(null);
+  }, [editable]);
 
   const setGesture = (next: Gesture | null) => {
     gestureRef.current = next;
@@ -87,16 +157,17 @@ export function ParkMap({
   }, [architecture.edges, selectedEdgeId]);
 
   useEffect(() => {
-    if (!connectionSource && !selectedEdgeId) return;
+    if (!connectionSource && !selectedEdgeId && tool !== "connect") return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setSelectedEdgeId(null);
       setGesture(null);
+      setTool("select");
       if (connectionSource) onCancelConnection();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [connectionSource, onCancelConnection, selectedEdgeId]);
+  }, [connectionSource, onCancelConnection, selectedEdgeId, tool]);
 
   useEffect(() => {
     if (!selectedEdgeId) return;
@@ -128,8 +199,8 @@ export function ParkMap({
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      x: event.clientX - bounds.left,
-      y: event.clientY - bounds.top,
+      x: (event.clientX - bounds.left) / zoom,
+      y: (event.clientY - bounds.top) / zoom,
       moved: false,
       targetId: null,
     });
@@ -146,8 +217,8 @@ export function ParkMap({
       ?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
     setGesture({
       ...current,
-      x: event.clientX - bounds.left,
-      y: event.clientY - bounds.top,
+      x: (event.clientX - bounds.left) / zoom,
+      y: (event.clientY - bounds.top) / zoom,
       moved: current.moved || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) >= 4,
       targetId: hovered && isEligible(current.sourceId, hovered) ? hovered : null,
     });
@@ -162,8 +233,10 @@ export function ParkMap({
     }
     setGesture(null);
     if (!current.moved) return;
-    if (current.targetId) onConnect(current.sourceId, current.targetId);
-    else onCancelConnection();
+    if (current.targetId) {
+      onConnect(current.sourceId, current.targetId);
+      setTool("select");
+    } else onCancelConnection();
   }
 
   const paths = architecture.edges.flatMap((edge) => {
@@ -174,158 +247,191 @@ export function ParkMap({
   const selectedPath = paths.find(({ edge }) => edge.id === selectedEdgeId);
 
   return (
-    <div
-      className={`park-map ${dropActive ? "drop-active" : ""} ${activeSource ? "choosing-destination" : ""}`}
-      onClick={(event) => {
-        if (event.target instanceof Element && event.target.closest(".park-building, .route-action, .route-hitbox")) {
-          return;
-        }
-        if (connectionSource) {
-          setGesture(null);
-          onCancelConnection();
-        } else {
-          onSelect(null);
-        }
-      }}
-      onDragOver={(event) => {
-        if (!editable || !event.dataTransfer.types.includes(DRAG_TYPE)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-        setDropActive(true);
-      }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false);
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        setDropActive(false);
-        const type = event.dataTransfer.getData(DRAG_TYPE) as NodeType;
-        if (!editable || !nodeTypes.includes(type)) return;
-        const bounds = event.currentTarget.getBoundingClientRect();
-        onBuild(type, {
-          x: Math.max(0, Math.min(bounds.width - BUILDING_WIDTH, event.clientX - bounds.left - BUILDING_WIDTH / 2)),
-          y: Math.max(0, Math.min(bounds.height - BUILDING_HEIGHT, event.clientY - bounds.top - BUILDING_HEIGHT / 2)),
-        });
-      }}
-    >
-      <div className="park-hills" aria-hidden="true" />
-      <div className="park-road" aria-hidden="true" />
-      <div className="park-gate" aria-hidden="true">
-        <Users />
-        <span>THE INTERNET</span>
+    <>
+      <div className="canvas-toolbar">
+        <div className="canvas-tools" aria-label="Canvas tools">
+          <button type="button" aria-pressed={tool === "select" && !activeSource} onClick={() => { setTool("select"); if (connectionSource) onCancelConnection(); }}>
+            <MousePointer2 /> Select
+          </button>
+          <button type="button" aria-pressed={tool === "connect" || Boolean(activeSource)} disabled={!editable} onClick={() => setTool("connect")}>
+            <Route /> Connect
+          </button>
+        </div>
+        <div className="canvas-zoom" aria-label="Canvas zoom">
+          <button type="button" aria-label="Zoom out" disabled={zoom <= 0.5} onClick={() => setZoom((value) => Math.max(0.5, value - 0.1))}><Minus /></button>
+          <output aria-label="Zoom">{Math.round(zoom * 100)}%</output>
+          <button type="button" aria-label="Zoom in" disabled={zoom >= 1.5} onClick={() => setZoom((value) => Math.min(1.5, value + 0.1))}><Plus /></button>
+          <button type="button" aria-label="Fit park to view" onClick={fitView}><Maximize /></button>
+        </div>
       </div>
-      <svg className="route-layer" role="group" aria-label="Traffic routes">
-        <defs>
-          <marker id="connection-preview-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4" viewBox="0 0 8 8">
-            <path d="M0 0 8 4 0 8Z" />
-          </marker>
-        </defs>
-        {paths.map(({ edge, source, target, d }) => {
-          const flow = snapshot?.nodes[target.id];
-          const health = flow?.health;
-          const congested = health === "saturated" || health === "failed";
-          const packets = flow ? Math.max(1, Math.min(5, Math.ceil(flow.load / 1_500))) : 0;
-          const duration = congested ? 4.2 : flow && flow.load > 6_000 ? 1.6 : 2.6;
-          const selected = selectedEdgeId === edge.id;
-          return (
-            <g key={edge.id}>
-              <path className={`route-shadow ${selected ? "selected" : ""}`} d={d} />
-              <path className={`route-line ${health === "failed" ? "interrupted" : ""} ${edge.call?.mode === "async" ? "async" : ""} ${selected ? "selected" : ""}`} d={d} />
-              {Array.from({ length: packets }, (_, index) => (
-                <circle className={congested ? "traffic-packet congested" : "traffic-packet"} key={index} r="5">
-                  <animateMotion begin={`${index * -(duration / packets)}s`} dur={`${duration}s`} path={d} repeatCount="indefinite" />
-                </circle>
-              ))}
-              <path
-                className="route-hitbox"
-                d={d}
-                role="button"
-                tabIndex={editable ? 0 : -1}
-                aria-label={`Route from ${nodeLabel(source)} to ${nodeLabel(target)}`}
-                aria-pressed={selected}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (editable) setSelectedEdgeId(edge.id);
-                }}
-                onKeyDown={(event) => {
-                  if (!editable || (event.key !== "Enter" && event.key !== " ")) return;
-                  event.preventDefault();
-                  setSelectedEdgeId(edge.id);
+      <div
+        className={`park-viewport ${dropActive ? "drop-active" : ""}`}
+        ref={viewportRef}
+        tabIndex={0}
+        role="region"
+        aria-label="Park canvas. Scroll to explore."
+        onClick={(event) => {
+          if (event.target === event.currentTarget || (event.target instanceof Element && event.target.classList.contains("park-map-frame"))) {
+            if (connectionSource) onCancelConnection();
+            else onSelect(null);
+          }
+        }}
+        onDragOver={(event) => {
+          if (!editable || !event.dataTransfer.types.includes(DRAG_TYPE)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+          setDropActive(true);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDropActive(false);
+          const type = event.dataTransfer.getData(DRAG_TYPE) as NodeType;
+          if (!editable || !nodeTypes.includes(type)) return;
+          const bounds = event.currentTarget.querySelector(".park-map")?.getBoundingClientRect();
+          if (!bounds) return;
+          onBuild(type, {
+            x: Math.max(mapBounds.left, Math.min(mapBounds.right - BUILDING_WIDTH, (event.clientX - bounds.left) / zoom - BUILDING_WIDTH / 2)),
+            y: Math.max(mapBounds.top, Math.min(mapBounds.bottom - BUILDING_HEIGHT, (event.clientY - bounds.top) / zoom - BUILDING_HEIGHT / 2)),
+          });
+        }}
+      >
+        <div className="park-map-frame" style={{ width: Math.max(viewport.width, (canvas.right - canvas.left) * zoom), height: Math.max(viewport.height, (canvas.bottom - canvas.top) * zoom) }}>
+          <div
+            style={{ width: mapBounds.right, height: mapBounds.bottom, left: (extraX - canvas.left) * zoom, top: (extraY - canvas.top) * zoom, transform: `scale(${zoom})` }}
+            className={`park-map ${activeSource ? "choosing-destination" : ""}`}
+            onClick={(event) => {
+              if (event.target instanceof Element && event.target.closest(".park-building, .route-action, .route-hitbox")) {
+                return;
+              }
+              if (connectionSource) {
+                setGesture(null);
+                onCancelConnection();
+              } else {
+                onSelect(null);
+              }
+            }}
+          >
+            <svg className="route-layer" role="group" aria-label="Traffic routes">
+              <defs>
+                <marker id="connection-preview-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4" viewBox="0 0 8 8">
+                  <path d="M0 0 8 4 0 8Z" />
+                </marker>
+              </defs>
+              {paths.map(({ edge, source, target, d }) => {
+                const flow = snapshot?.nodes[target.id];
+                const health = flow?.health;
+                const congested = health === "saturated" || health === "failed";
+                const packets = flow ? Math.max(1, Math.min(5, Math.ceil(flow.load / 1_500))) : 0;
+                const duration = congested ? 4.2 : flow && flow.load > 6_000 ? 1.6 : 2.6;
+                const selected = selectedEdgeId === edge.id;
+                return (
+                  <g key={edge.id}>
+                    <path className={`route-shadow ${selected ? "selected" : ""}`} d={d} />
+                    <path className={`route-line ${health === "failed" ? "interrupted" : ""} ${edge.call?.mode === "async" ? "async" : ""} ${selected ? "selected" : ""}`} d={d} />
+                    {Array.from({ length: packets }, (_, index) => (
+                      <circle className={congested ? "traffic-packet congested" : "traffic-packet"} key={index} r="5">
+                        <animateMotion begin={`${index * -(duration / packets)}s`} dur={`${duration}s`} path={d} repeatCount="indefinite" />
+                      </circle>
+                    ))}
+                    <path
+                      className="route-hitbox"
+                      d={d}
+                      role="button"
+                      tabIndex={editable ? 0 : -1}
+                      aria-label={`Route from ${nodeLabel(source)} to ${nodeLabel(target)}`}
+                      aria-pressed={selected}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (editable) setSelectedEdgeId(edge.id);
+                      }}
+                      onKeyDown={(event) => {
+                        if (!editable || (event.key !== "Enter" && event.key !== " ")) return;
+                        event.preventDefault();
+                        setSelectedEdgeId(edge.id);
+                      }}
+                    />
+                  </g>
+                );
+              })}
+              {gesture?.moved &&
+                (() => {
+                  const source = byId.get(gesture.sourceId);
+                  if (!source) return null;
+                  const target = gesture.targetId ? byId.get(gesture.targetId) : undefined;
+                  const end = target ? routeCenter(target) : { x: gesture.x, y: gesture.y };
+                  return (
+                    <path
+                      className={`connection-preview ${target ? "valid" : ""}`}
+                      d={curve({ x: source.x + BUILDING_WIDTH, y: source.y + 57 }, end)}
+                      markerEnd="url(#connection-preview-arrow)"
+                    />
+                  );
+                })()}
+            </svg>
+            {selectedPath && editable && (
+              <RouteAction
+                edge={selectedPath.edge}
+                source={selectedPath.source}
+                target={selectedPath.target}
+                onDisconnect={() => {
+                  setSelectedEdgeId(null);
+                  onDisconnect(selectedPath.edge.id);
                 }}
               />
-            </g>
-          );
-        })}
-        {gesture?.moved &&
-          (() => {
-            const source = byId.get(gesture.sourceId);
-            if (!source) return null;
-            const target = gesture.targetId ? byId.get(gesture.targetId) : undefined;
-            const end = target ? routeCenter(target) : { x: gesture.x, y: gesture.y };
-            return (
-              <path
-                className={`connection-preview ${target ? "valid" : ""}`}
-                d={curve({ x: source.x + 108, y: source.y + 57 }, end)}
-                markerEnd="url(#connection-preview-arrow)"
+            )}
+            {architecture.nodes.map((node) => (
+              <Building
+                key={node.id}
+                node={node}
+                health={snapshot ? (snapshot.nodes[node.id]?.health ?? "idle") : undefined}
+                selected={selectedId === node.id}
+                editable={editable}
+                movable={editable && tool === "select" && !activeSource}
+                zoom={zoom}
+                bounds={mapBounds}
+                connecting={activeSource === node.id}
+                eligible={Boolean(activeSource) && isEligible(activeSource!, node.id)}
+                target={gesture?.targetId === node.id}
+                connectorDisabled={!hasDestination(node.id)}
+                onClick={() => {
+                  setSelectedEdgeId(null);
+                  if (connectionSource && connectionSource !== node.id && isEligible(connectionSource, node.id)) {
+                    onConnect(connectionSource, node.id);
+                    setTool("select");
+                  } else if (connectionSource === node.id) {
+                    onCancelConnection();
+                  } else if (tool === "connect" && editable && hasDestination(node.id)) {
+                    onConnectionSource(node.id);
+                  } else {
+                    onSelect(node.id);
+                  }
+                }}
+                onConnectorClick={() => {
+                  if (suppressConnectorClick.current === node.id) {
+                    suppressConnectorClick.current = null;
+                    return;
+                  }
+                  if (connectionSource === node.id) onCancelConnection();
+                  else onConnectionSource(node.id);
+                }}
+                onConnectorPointerDown={(event) => beginConnectorDrag(event, node.id)}
+                onConnectorPointerMove={moveConnector}
+                onConnectorPointerUp={finishConnector}
+                onConnectorPointerCancel={(event) => {
+                  if (gestureRef.current?.pointerId !== event.pointerId) return;
+                  setGesture(null);
+                  onCancelConnection();
+                }}
+                onMove={onMove}
               />
-            );
-          })()}
-      </svg>
-      {selectedPath && editable && (
-        <RouteAction
-          edge={selectedPath.edge}
-          source={selectedPath.source}
-          target={selectedPath.target}
-          onDisconnect={() => {
-            setSelectedEdgeId(null);
-            onDisconnect(selectedPath.edge.id);
-          }}
-        />
-      )}
-      <div className="park-tree tree-a" aria-hidden="true">♣</div>
-      <div className="park-tree tree-b" aria-hidden="true">♣</div>
-      <div className="park-tree tree-c" aria-hidden="true">♣</div>
-      {architecture.nodes.map((node) => (
-        <Building
-          key={node.id}
-          node={node}
-          health={snapshot ? (snapshot.nodes[node.id]?.health ?? "idle") : undefined}
-          selected={selectedId === node.id}
-          editable={editable}
-          connecting={activeSource === node.id}
-          eligible={Boolean(activeSource) && isEligible(activeSource!, node.id)}
-          target={gesture?.targetId === node.id}
-          connectorDisabled={!hasDestination(node.id)}
-          onClick={() => {
-            setSelectedEdgeId(null);
-            if (connectionSource && connectionSource !== node.id && isEligible(connectionSource, node.id)) {
-              onConnect(connectionSource, node.id);
-            } else if (connectionSource === node.id) {
-              onCancelConnection();
-            } else {
-              onSelect(node.id);
-            }
-          }}
-          onConnectorClick={() => {
-            if (suppressConnectorClick.current === node.id) {
-              suppressConnectorClick.current = null;
-              return;
-            }
-            if (connectionSource === node.id) onCancelConnection();
-            else onConnectionSource(node.id);
-          }}
-          onConnectorPointerDown={(event) => beginConnectorDrag(event, node.id)}
-          onConnectorPointerMove={moveConnector}
-          onConnectorPointerUp={finishConnector}
-          onConnectorPointerCancel={(event) => {
-            if (gestureRef.current?.pointerId !== event.pointerId) return;
-            setGesture(null);
-            onCancelConnection();
-          }}
-          onMove={onMove}
-        />
-      ))}
-    </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -396,6 +502,9 @@ function Building({
   health,
   selected,
   editable,
+  movable,
+  zoom,
+  bounds,
   connecting,
   eligible,
   target,
@@ -412,6 +521,9 @@ function Building({
   health?: Health;
   selected: boolean;
   editable: boolean;
+  movable: boolean;
+  zoom: number;
+  bounds: MapBounds;
   connecting: boolean;
   eligible: boolean;
   target: boolean;
@@ -440,14 +552,13 @@ function Building({
         className="building-select"
         type="button"
         aria-label={`${nodeLabel(node)}${subtitle ? `, ${subtitle}` : ""}, ${status}`}
+        aria-pressed={selected}
         onClick={(event) => {
           event.stopPropagation();
           if (!suppressClick.current) onClick();
         }}
         onPointerDown={(event) => {
-          if (event.button !== 0 || !event.isPrimary) return;
-          const bounds = event.currentTarget.closest(".park-map")?.getBoundingClientRect();
-          if (!bounds) return;
+          if (!movable || event.button !== 0 || !event.isPrimary) return;
           event.currentTarget.setPointerCapture(event.pointerId);
           drag.current = {
             pointerId: event.pointerId,
@@ -455,22 +566,22 @@ function Building({
             y: event.clientY,
             nodeX: node.x,
             nodeY: node.y,
-            maxX: Math.max(0, bounds.width - BUILDING_WIDTH),
-            maxY: Math.max(0, bounds.height - BUILDING_HEIGHT),
+            maxX: bounds.right - BUILDING_WIDTH,
+            maxY: bounds.bottom - BUILDING_HEIGHT,
             moved: false,
           };
         }}
         onPointerMove={(event) => {
           const current = drag.current;
           if (!current || current.pointerId !== event.pointerId) return;
-          const dx = event.clientX - current.x;
-          const dy = event.clientY - current.y;
+          const dx = (event.clientX - current.x) / zoom;
+          const dy = (event.clientY - current.y) / zoom;
           if (!current.moved && Math.hypot(dx, dy) < 4) return;
           current.moved = true;
           setDragging(true);
           onMove(node.id, {
-            x: Math.max(0, Math.min(current.maxX, current.nodeX + dx)),
-            y: Math.max(0, Math.min(current.maxY, current.nodeY + dy)),
+            x: Math.max(bounds.left, Math.min(current.maxX, current.nodeX + dx)),
+            y: Math.max(bounds.top, Math.min(current.maxY, current.nodeY + dy)),
           });
         }}
         onPointerUp={(event) => {
@@ -490,14 +601,11 @@ function Building({
         }}
       >
         <BuildingArt type={node.type} />
-        <span className="building-status"><i aria-hidden="true" />{status}</span>
+        {health && health !== "healthy" && health !== "idle" && <span className="building-status">{status}</span>}
         <span className="building-label">
           <b title={nodeLabel(node)}>{nodeLabel(node)}</b>
           {subtitle && <small>{subtitle}</small>}
         </span>
-        {(health === "busy" || health === "saturated" || health === "failed") && (
-          <span className="building-smoke">● ●</span>
-        )}
       </button>
       {editable && (
         <button
@@ -523,7 +631,7 @@ function Building({
 }
 
 function routeCenter(node: ParkNode) {
-  return { x: node.x + 54, y: node.y + 48 };
+  return { x: node.x + BUILDING_WIDTH / 2, y: node.y + 55 };
 }
 
 function curve(start: { x: number; y: number }, end: { x: number; y: number }) {

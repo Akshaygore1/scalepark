@@ -118,7 +118,6 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       return {
         ...state,
         connectionSource: action.nodeId,
-        selectedId: action.nodeId ?? state.selectedId,
         notice: action.notice ?? state.notice,
       };
     case "start-run":

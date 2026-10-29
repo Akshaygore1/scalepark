@@ -8,9 +8,9 @@
   --park-coral: #ef6f5e;
   --park-yellow: #f5c954;
   --park-line: #27473d;
-  --park-display: "Bricolage Grotesque", sans-serif;
+  --park-display: var(--park-body);
   --park-body: "Nunito Sans", sans-serif;
-  --mono: "DM Mono", monospace;
+  --mono: var(--park-body);
   color-scheme: light;
 }
 

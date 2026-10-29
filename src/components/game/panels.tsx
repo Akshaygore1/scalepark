@@ -1,6 +1,5 @@
 import {
   Activity,
-  Banknote,
   BookOpen,
   CircleCheck,
   CircleDashed,
@@ -9,171 +8,86 @@ import {
   Lightbulb,
   Pause,
   Play,
-  Plus,
   RotateCcw,
   Shapes,
-  ShieldCheck,
   Square,
   Users,
   Zap,
 } from "lucide-react";
 
 import type { SimLevel } from "@/lib/curriculum";
-import { measureTarget, type TargetResult } from "@/lib/evaluate";
+import { formatClock, measureTarget, type TargetResult } from "@/lib/evaluate";
 import { buildCost, nodeCatalog, type Architecture, type NodeType } from "@/lib/model";
 import { summarize, type Scenario, type Snapshot, type SimulationResult } from "@/lib/simulation";
-import { formatClock } from "@/lib/evaluate";
 
+import { BuildingArt } from "./building-art";
 import { buildingLook, formatMoney } from "./buildings";
 import type { Phase, Speed } from "./game-state";
 import { DRAG_TYPE } from "./park-map";
 
 export function GameHud({
-  level,
   phase,
-  speed,
-  snapshot,
-  second,
-  duration,
-  monthlyCost,
-  complexity,
-  budget,
   hasRun,
-  hints,
-  hintsShown,
-  hintOpen,
   onExit,
   onPlay,
   onStop,
-  onSpeed,
   onReview,
-  onHint,
-  onToggleHint,
   onJournal,
   onReset,
 }: {
-  level: SimLevel;
   phase: Phase;
-  speed: Speed;
-  snapshot?: Snapshot;
-  second: number;
-  duration: number;
-  monthlyCost: number;
-  complexity: number;
-  budget?: number;
   hasRun: boolean;
-  hints: string[];
-  hintsShown: number;
-  hintOpen: boolean;
   onExit: () => void;
   onPlay: () => void;
   onStop: () => void;
-  onSpeed: (speed: Speed) => void;
   onReview: () => void;
-  onHint: () => void;
-  onToggleHint: () => void;
   onJournal: () => void;
   onReset: () => void;
 }) {
   const running = phase === "running";
-  const isSandbox = level.id === "sandbox";
   return (
     <header className="game-hud">
-      <button className="hud-brand" type="button" onClick={onExit}>
-        <Activity size={18} /> ScaleLab Park
-      </button>
-      <HudStat icon={<Users />} label="Traffic" value={snapshot ? `${snapshot.demand.toLocaleString()}/s` : "-"} />
-      <HudStat
-        icon={<Banknote />}
-        label={budget ? `Cost · budget ${formatMoney(budget)}` : "Running cost"}
-        value={`${formatMoney(snapshot?.monthlyCost ?? monthlyCost)}/mo`}
-        alert={Boolean(budget && (snapshot?.monthlyCost ?? monthlyCost) > budget)}
-      />
-      <HudStat icon={<Gauge />} label="Availability" value={snapshot ? `${(snapshot.availability * 100).toFixed(2)}%` : "-"} />
-      <HudStat icon={<Zap />} label="p95 latency" value={snapshot ? `${snapshot.p95Ms} ms` : "-"} />
-      <HudStat icon={<Shapes />} label="Complexity" value={String(complexity)} />
-      <div className="hud-clock">
-        <span>{phase === "planning" ? "Planning" : phase === "finished" ? "Finished" : "Run"}</span>
-        <b>
-          {formatClock(second)} / {formatClock(duration)}
-        </b>
-      </div>
-      <div className="time-controls" aria-label="Run controls">
-        <button type="button" aria-label={running ? "Pause" : phase === "paused" ? "Resume" : "Run the park"} onClick={onPlay}>
+      <button className="hud-brand" type="button" onClick={onExit}>ScaleLab Park</button>
+      <nav className="hud-actions" aria-label="Park controls">
+        <button type="button" disabled={!hasRun} onClick={onReview} title="Run review" aria-label="Open run review">
+          <Activity /> <span>Review</span>
+        </button>
+        <button type="button" onClick={onJournal}>
+          <BookOpen /> <span>Journal</span>
+        </button>
+        <button type="button" disabled={running || phase === "paused"} onClick={onReset}>
+          <RotateCcw /> <span>Reset park</span>
+        </button>
+        {phase !== "planning" && (
+          <button type="button" onClick={onStop} aria-label="Stop and edit">
+            <Square /> <span>Stop</span>
+          </button>
+        )}
+        <button className="run-button" type="button" onClick={onPlay}>
           {running ? <Pause fill="currentColor" /> : <Play fill="currentColor" />}
+          {running ? "Pause" : phase === "paused" ? "Resume" : "Run simulation"}
         </button>
-        <button type="button" aria-label="Stop and edit" disabled={phase === "planning"} onClick={onStop}>
-          <Square fill="currentColor" />
-        </button>
-        {([1, 2, 4] as Speed[]).map((option) => (
-          <button className={speed === option ? "active" : ""} key={option} type="button" onClick={() => onSpeed(option)}>
-            {option}×
-          </button>
-        ))}
-      </div>
-      <button className="journal-button" type="button" disabled={!hasRun} onClick={onReview} aria-label="Open run review" title="Run review">
-        <Activity />
-      </button>
-      {!isSandbox && (
-        <div className="navbar-hint">
-          <button
-            className={`journal-button advisor-hint-button ${hintOpen ? "active" : ""}`}
-            type="button"
-            aria-label="Hints"
-            aria-expanded={hintOpen}
-            aria-controls="hint-popover"
-            title="Hints"
-            onClick={hintsShown === 0 ? onHint : onToggleHint}
-          >
-            <Lightbulb />
-          </button>
-          <section className="exact-steps-popover" id="hint-popover" hidden={!hintOpen} aria-label="Hints">
-            <b>Hints</b>
-            <ol>
-              {hints.slice(0, hintsShown).map((hint, index) => (
-                <li key={index}>
-                  <small>{["Symptom", "Where to look", "What to try"][index]}</small>
-                  {hint}
-                </li>
-              ))}
-            </ol>
-            {hintsShown < hints.length && (
-              <button className="hint-more" type="button" onClick={onHint}>
-                {["Show a hint", "Where should I look?", "What should I try?"][hintsShown]}
-              </button>
-            )}
-            {hintsShown >= hints.length && level.finalHint.length > 0 && (
-              <details className="hint-solution">
-                <summary className="hint-more">Show exact configuration</summary>
-                <p>Start from Reset park, then follow these steps. Leave unlisted settings unchanged.</p>
-                <ol aria-label="Exact configuration">
-                  {level.finalHint.map((step) => (
-                    <li key={step}>{step}</li>
-                  ))}
-                </ol>
-              </details>
-            )}
-          </section>
-        </div>
-      )}
-      <button className="journal-button" type="button" onClick={onJournal} aria-label="System design journal" title="Journal">
-        <BookOpen />
-      </button>
-      <button className="journal-button" type="button" onClick={onReset} aria-label="Reset to the starting park" title="Reset park">
-        <RotateCcw />
-      </button>
+      </nav>
     </header>
   );
 }
 
-function HudStat({ icon, label, value, alert = false }: { icon: React.ReactNode; label: string; value: string; alert?: boolean }) {
+export function ParkMetrics({ snapshot, complexity }: { snapshot?: Snapshot; complexity: number }) {
   return (
-    <div className={`hud-stat ${alert ? "alert" : ""}`}>
-      {icon}
-      <span>
-        {label}
-        <b>{value}</b>
-      </span>
+    <section className="park-metrics" aria-label="Live park metrics">
+      <HudStat icon={<Users />} label="Traffic" value={snapshot ? snapshot.demand.toLocaleString() : "0"} unit="req/s" />
+      <HudStat icon={<Gauge />} label="Availability" value={snapshot ? (snapshot.availability * 100).toFixed(2) : "-"} unit="%" />
+      <HudStat icon={<Zap />} label="p95 latency" value={snapshot ? String(snapshot.p95Ms) : "-"} unit="ms" />
+      <HudStat icon={<Shapes />} label="Complexity" value={String(complexity)} unit="components" />
+    </section>
+  );
+}
+
+function HudStat({ icon, label, value, unit }: { icon: React.ReactNode; label: string; value: string; unit: string }) {
+  return (
+    <div className="hud-stat">
+      <span className="hud-stat-label">{icon}{label}</span>
+      <span className="hud-stat-value"><b>{value}</b><small>{unit}</small></span>
     </div>
   );
 }
@@ -194,6 +108,12 @@ export function MissionRail({
   second,
   finalTargets,
   warnings,
+  monthlyCost,
+  budget,
+  hintsShown,
+  hintOpen,
+  onHint,
+  onToggleHint,
 }: {
   level: SimLevel;
   moduleTitle: string;
@@ -202,6 +122,12 @@ export function MissionRail({
   second: number;
   finalTargets?: TargetResult[];
   warnings: string[];
+  monthlyCost: number;
+  budget?: number;
+  hintsShown: number;
+  hintOpen: boolean;
+  onHint: () => void;
+  onToggleHint: () => void;
 }) {
   const showing = phase !== "planning" && result && result.validation.ok;
   const targets = showing
@@ -209,38 +135,90 @@ export function MissionRail({
       ? finalTargets
       : liveTargets(level, result, second)
     : level.targets.map((target) => ({ ...measureTarget(target, emptyResult), measured: "" }));
+  const overBudget = budget !== undefined && monthlyCost > budget;
   return (
-    <aside className="mission-rail">
-      <span className="mission-kicker">
-        {level.id === "sandbox" ? "Free build" : `${level.code} · ${moduleTitle}`}
-      </span>
-      <h1>{level.title}</h1>
-      <div className="mission-objective">
-        <ShieldCheck size={17} />
-        <span>{level.brief}</span>
+    <aside className="mission-rail" aria-labelledby="mission-title">
+      <div className="mission-heading">
+        <span className="mission-kicker">
+          {level.id === "sandbox" ? "Free build" : `${level.code} · ${moduleTitle}`}
+        </span>
+        <h1 id="mission-title">{level.title}</h1>
+        <p className="mission-objective">{level.brief}</p>
       </div>
       {level.targets.length > 0 && (
-        <ul className="mission-targets" aria-label="Targets">
-          {targets.map((item) => (
-            <li key={item.label} className={!showing ? "" : item.pass ? "pass" : "fail"}>
-              {!showing ? <CircleDashed /> : item.pass ? <CircleCheck /> : <CircleX />}
-              <span>{item.label}</span>
-              <b>{showing ? item.measured : item.goal}</b>
-            </li>
-          ))}
-        </ul>
+        <section className="mission-goals" aria-label="Objectives">
+          <div className="mission-section-label">
+            <span>Objectives</span>
+            <span>{showing ? targets.filter((target) => target.pass).length : 0} / {targets.length}</span>
+          </div>
+          <ul className="mission-targets">
+            {targets.map((item) => (
+              <li key={item.label} className={!showing ? "" : item.pass ? "pass" : "fail"}>
+                {!showing ? <CircleDashed /> : item.pass ? <CircleCheck /> : <CircleX />}
+                <span>{item.label}</span>
+                <b>{showing ? item.measured : item.goal}</b>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
+      <section className={`mission-budget ${overBudget ? "over-budget" : ""}`} aria-label="Monthly cost">
+        <div className="mission-budget-heading">
+          <span>{budget === undefined ? "Monthly cost" : "Budget"}</span>
+          <strong>{formatMoney(monthlyCost)}{budget !== undefined && <small> / {formatMoney(budget)}</small>}</strong>
+        </div>
+        {budget !== undefined && (
+          <>
+            <meter min={0} max={budget} value={Math.min(monthlyCost, budget)} aria-label="Monthly budget used" />
+            <div className="mission-budget-detail">
+              <span>{formatMoney(Math.abs(budget - monthlyCost))} {overBudget ? "over budget" : "remaining"}</span>
+              <span>per month</span>
+            </div>
+          </>
+        )}
+      </section>
       {level.id !== "sandbox" && (
-        <p className="mission-par">
-          ★★ at or under {formatMoney(level.par.monthly)}/mo · ★★★ and complexity {level.par.complexity} or less
-        </p>
+        <p className="mission-par">2 stars: ≤ {formatMoney(level.par.monthly)}/mo. 3 stars: also complexity ≤ {level.par.complexity}.</p>
       )}
       {phase === "planning" && warnings.length > 0 && (
         <ul className="mission-warnings">
-          {warnings.map((warning) => (
-            <li key={warning}>{warning}</li>
-          ))}
+          {warnings.map((warning) => <li key={warning}>{warning}</li>)}
         </ul>
+      )}
+      {level.id !== "sandbox" && (
+        <div className="mission-hints">
+          <button
+            className="hint-toggle"
+            type="button"
+            aria-expanded={hintOpen}
+            aria-controls="level-hints"
+            onClick={hintsShown === 0 ? onHint : onToggleHint}
+          >
+            <Lightbulb /> Hint <span aria-hidden="true">{hintOpen ? "−" : "+"}</span>
+          </button>
+          <section id="level-hints" hidden={!hintOpen} aria-label="Hints">
+            <ol>
+              {level.hints.slice(0, hintsShown).map((hint, index) => (
+                <li key={index}>
+                  <small>{["Symptom", "Where to look", "What to try"][index]}</small>
+                  {hint}
+                </li>
+              ))}
+            </ol>
+            {hintsShown < level.hints.length && (
+              <button className="hint-more" type="button" onClick={onHint}>
+                {["Show a hint", "Where should I look?", "What should I try?"][hintsShown]}
+              </button>
+            )}
+            {hintsShown >= level.hints.length && level.finalHint.length > 0 && (
+              <details className="hint-solution">
+                <summary className="hint-more">Show exact configuration</summary>
+                <p>Start from Reset park, then follow these steps. Leave unlisted settings unchanged.</p>
+                <ol>{level.finalHint.map((step) => <li key={step}>{step}</li>)}</ol>
+              </details>
+            )}
+          </section>
+        </div>
       )}
     </aside>
   );
@@ -258,45 +236,45 @@ export function BuildDock({
   architecture,
   editable,
   onBuild,
+  onSelect,
 }: {
   level: SimLevel;
   architecture: Architecture;
   editable: boolean;
   onBuild: (type: NodeType) => void;
+  onSelect: (nodeId: string) => void;
 }) {
   const built = new Set(architecture.nodes.filter((node) => !nodeCatalog[node.type].multiple).map((node) => node.type));
   return (
     <aside className="build-dock" aria-label="Build">
-      <div className="dock-heading">
-        <Plus />
-        <span>Build</span>
+      <div className="dock-heading">Build</div>
+      <div className="dock-buildings">
+        {level.unlocks.nodes.map((type) => {
+          const { color } = buildingLook[type];
+          const existing = built.has(type) ? architecture.nodes.find((node) => node.type === type) : undefined;
+          const disabled = !editable;
+          return (
+            <button
+              disabled={disabled}
+              draggable={!disabled && !existing}
+              key={type}
+              type="button"
+              title={built.has(type) ? "Already built: scale it from its settings" : nodeCatalog[type].role}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = "copy";
+                event.dataTransfer.setData(DRAG_TYPE, type);
+              }}
+              onClick={() => existing ? onSelect(existing.id) : onBuild(type)}
+            >
+              <span className={`dock-art ${color}`}><BuildingArt type={type} /></span>
+              <span>
+                <b>{nodeCatalog[type].short}</b>
+                <small>{built.has(type) ? "built" : `from ${formatMoney(buildCost[type])}/mo`}</small>
+              </span>
+            </button>
+          );
+        })}
       </div>
-      {level.unlocks.nodes.map((type) => {
-        const { icon: Icon, color } = buildingLook[type];
-        const disabled = !editable || built.has(type);
-        return (
-          <button
-            disabled={disabled}
-            draggable={!disabled}
-            key={type}
-            type="button"
-            title={built.has(type) ? "Already built: scale it from its settings" : nodeCatalog[type].role}
-            onDragStart={(event) => {
-              event.dataTransfer.effectAllowed = "copy";
-              event.dataTransfer.setData(DRAG_TYPE, type);
-            }}
-            onClick={() => onBuild(type)}
-          >
-            <span className={`dock-icon ${color}`}>
-              <Icon />
-            </span>
-            <span>
-              <b>{nodeCatalog[type].short}</b>
-              <small>{built.has(type) ? "built" : `from ${formatMoney(buildCost[type])}/mo`}</small>
-            </span>
-          </button>
-        );
-      })}
     </aside>
   );
 }
@@ -408,22 +386,27 @@ export function SandboxControls({ settings, editable, onChange }: { settings: Sa
   );
 }
 
-export function EventTicker({ second, result, phase }: { second: number; result?: SimulationResult; phase: Phase }) {
+export function EventTicker({ second, duration, result, phase, notice, speed, onSpeed }: {
+  second: number;
+  duration: number;
+  result?: SimulationResult;
+  phase: Phase;
+  notice: string;
+  speed: Speed;
+  onSpeed: (speed: Speed) => void;
+}) {
   const latest = result?.events.filter((event) => event.second <= second).at(-1);
-  const snapshot = phase === "planning" ? undefined : result?.snapshots[second];
-  const worst = snapshot
-    ? (["failed", "saturated", "busy", "healthy"] as const).find((state) =>
-        Object.values(snapshot.nodes).some((node) => node?.health === state),
-      ) ?? "healthy"
-    : undefined;
   return (
-    <div className="event-ticker" aria-label="Park events" aria-live="polite">
-      <span className="ticker-live">
-        <i /> {phase === "planning" ? "PLAN" : "LIVE"}
-      </span>
-      <strong>{formatClock(second)}</strong>
-      <span>{phase === "planning" ? "Build and connect, then press play." : (latest?.message ?? "Traffic is arriving.")}</span>
-      {worst && <span className={`ticker-health ${worst}`}>{worst === "saturated" ? "overloaded" : worst}</span>}
-    </div>
+    <footer className="event-ticker" aria-label="Playback and park events">
+      <span className="ticker-phase">{{ planning: "Planning", running: "Running", paused: "Paused", finished: "Finished" }[phase]}</span>
+      <strong>{formatClock(second)} / {formatClock(duration)}</strong>
+      <progress value={second} max={duration} aria-label="Simulation progress" />
+      <span className="ticker-message" role="status">{phase === "planning" ? notice : latest?.message ?? notice}</span>
+      <div className="playback-speeds" aria-label="Playback speed">
+        {([1, 2, 4] as Speed[]).map((option) => (
+          <button type="button" key={option} aria-pressed={speed === option} onClick={() => onSpeed(option)}>{option}×</button>
+        ))}
+      </div>
+    </footer>
   );
 }
