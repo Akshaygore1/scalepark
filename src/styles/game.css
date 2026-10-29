@@ -445,11 +445,14 @@ body:has(.tycoon-shell) {
 
 /* Buildings */
 .park-building {
+  --building-accent: var(--park-coral);
+  --building-light: color-mix(in srgb, var(--building-accent), white 32%);
+  --building-shade: color-mix(in srgb, var(--building-accent), var(--park-line) 22%);
   position: absolute;
   z-index: 8;
   width: 110px;
   height: 118px;
-  filter: drop-shadow(0 7px 0 rgba(39, 71, 61, 0.28));
+  filter: drop-shadow(0 3px 0 rgba(39, 71, 61, 0.16));
   user-select: none;
   transition:
     translate 160ms ease,
@@ -463,38 +466,50 @@ body:has(.tycoon-shell) {
   cursor: grab;
   touch-action: none;
 }
+.building-select:active {
+  cursor: grabbing;
+}
 .park-building.dragging {
   z-index: 15;
   cursor: grabbing;
   filter: drop-shadow(0 10px 0 rgba(39, 71, 61, 0.2));
   transition: none;
 }
-.park-building:hover,
 .park-building.selected,
 .park-building:focus-within {
-  translate: 0 -5px;
+  translate: 0 -3px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .park-building:hover {
+    translate: 0 -3px;
+  }
 }
 .building-select:focus-visible {
   outline: 3px solid #2c6f9e;
   outline-offset: 3px;
   border-radius: 12px;
 }
-.park-building.connecting .building-roof {
-  outline: 4px dashed white;
-  outline-offset: 6px;
+.park-building.selected .building-selection-ring,
+.park-building:focus-within .building-selection-ring {
+  opacity: 1;
+  stroke: var(--park-coral);
 }
-.park-building.connection-eligible .building-roof {
-  outline: 3px dashed rgba(255, 255, 255, 0.88);
-  outline-offset: 5px;
+.park-building.connection-eligible .building-selection-ring,
+.park-building.connecting .building-selection-ring {
+  opacity: 1;
+  stroke: var(--park-paper);
+  stroke-dasharray: 5 4;
 }
 .park-building.connection-target {
   z-index: 14;
   translate: 0 -7px;
   filter: drop-shadow(0 9px 0 rgba(39, 71, 61, 0.18));
 }
-.park-building.connection-target .building-roof {
-  outline: 5px solid #fff3a7;
-  outline-offset: 5px;
+.park-building.connection-target .building-selection-ring {
+  opacity: 1;
+  stroke: var(--park-yellow);
+  stroke-width: 4px;
+  stroke-dasharray: none;
 }
 .connection-handle {
   position: absolute;
@@ -550,70 +565,131 @@ body:has(.tycoon-shell) {
 .choosing-destination .park-building:not(.connection-eligible):not(.connecting) {
   filter: saturate(0.65) opacity(0.72);
 }
-.building-roof {
+.building-art {
   position: absolute;
-  z-index: 3;
-  top: 13px;
-  left: 17px;
-  width: 76px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  border: 3px solid var(--park-line);
-  border-radius: 11px 11px 4px 4px;
-  background: var(--park-coral);
-  color: white;
+  inset: 0;
+  width: 110px;
+  height: 108px;
+  overflow: visible;
+  pointer-events: none;
 }
-.building-roof svg {
-  width: 24px;
+.sprite-lines {
+  stroke: var(--park-line);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
 }
-.park-building.sky .building-roof {
-  background: #5ba5cc;
+.sprite-shadow {
+  fill: var(--park-line);
+  opacity: 0.12;
 }
-.park-building.violet .building-roof {
-  background: #8068b3;
+.building-selection-ring {
+  fill: none;
+  stroke-width: 3;
+  stroke-linejoin: round;
+  opacity: 0;
+  transition: opacity 160ms ease-out;
 }
-.park-building.yellow .building-roof {
-  background: var(--park-yellow);
-  color: var(--park-ink);
+.sprite-foundation {
+  fill: #dcecc1;
 }
-.park-building.blue .building-roof {
-  background: #518ac8;
+.sprite-foundation-edge {
+  fill: #82b565;
 }
-.park-building.indigo .building-roof {
-  background: #6570b7;
+.sprite-foundation-detail {
+  fill: none;
+  stroke: #f6ffe9;
+  stroke-width: 1.2;
 }
-.park-building.orange .building-roof {
-  background: #e79a4a;
+.sprite-accent {
+  fill: var(--building-accent);
 }
-.park-building.stone .building-roof {
-  background: #8f8a76;
+.sprite-light {
+  fill: var(--building-light);
 }
-.park-building.green .building-roof,
-.park-building.mint .building-roof {
-  background: #4caa75;
+.sprite-shade {
+  fill: var(--building-shade);
 }
-.building-body {
-  position: absolute;
-  z-index: 2;
-  left: 23px;
-  top: 45px;
-  width: 64px;
-  height: 49px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 3px solid var(--park-line);
-  border-radius: 3px 3px 9px 9px;
-  background: #fff7d7;
+.sprite-wall {
+  fill: var(--park-cream);
 }
-.building-body i {
-  width: 8px;
-  height: 17px;
-  border: 2px solid var(--park-line);
-  border-radius: 5px 5px 2px 2px;
-  background: #bfe5ee;
+.sprite-window {
+  fill: var(--park-sky);
+}
+.sprite-screen {
+  fill: #315a4b;
+}
+.sprite-seam,
+.sprite-door-slats {
+  fill: none;
+  stroke-width: 1.2;
+}
+.sprite-door-slats {
+  stroke: var(--park-sky);
+}
+.sprite-highlight,
+.sprite-network,
+.sprite-gear,
+.sprite-terminal,
+.sprite-rack-slot {
+  fill: none;
+  stroke: var(--park-cream);
+  stroke-width: 2;
+}
+.sprite-network {
+  stroke-width: 2.8;
+}
+.sprite-port {
+  fill: var(--park-cream);
+  stroke-width: 1.3;
+}
+.sprite-tower {
+  fill: none;
+  stroke-width: 2.5;
+}
+.sprite-signal,
+.sprite-replication {
+  fill: none;
+  stroke: var(--building-accent);
+  stroke-width: 2.7;
+}
+.building-led {
+  fill: #8bd88a;
+}
+.health-idle .building-led {
+  fill: #b9c2b2;
+}
+.health-busy .building-led {
+  fill: var(--park-yellow);
+}
+.health-saturated .building-led,
+.health-failed .building-led {
+  fill: var(--park-coral);
+}
+.park-building.sky {
+  --building-accent: #5ba5cc;
+}
+.park-building.violet {
+  --building-accent: #8068b3;
+}
+.park-building.yellow {
+  --building-accent: var(--park-yellow);
+}
+.park-building.blue {
+  --building-accent: #518ac8;
+}
+.park-building.indigo {
+  --building-accent: #6570b7;
+}
+.park-building.orange {
+  --building-accent: #e79a4a;
+}
+.park-building.stone {
+  --building-accent: #8f8a76;
+}
+.park-building.green,
+.park-building.mint {
+  --building-accent: #4caa75;
 }
 .building-label {
   position: absolute;
@@ -622,10 +698,11 @@ body:has(.tycoon-shell) {
   bottom: -4px;
   min-width: 104px;
   translate: -50% 0;
-  padding: 5px 8px;
-  border: 2px solid var(--park-line);
-  border-radius: 8px;
+  padding: 5px 8px 6px;
+  border: 1.5px solid var(--park-line);
+  border-radius: 6px;
   background: var(--park-paper);
+  box-shadow: 0 2px 0 rgba(39, 71, 61, 0.14);
   max-width: 150px;
   line-height: 1.1;
   white-space: nowrap;
@@ -646,10 +723,13 @@ body:has(.tycoon-shell) {
 .building-status {
   position: absolute;
   z-index: 6;
-  top: 0;
-  right: -5px;
-  padding: 3px 6px;
-  border: 2px solid var(--park-line);
+  top: -5px;
+  right: -3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1.5px solid var(--park-line);
   border-radius: 999px;
   background: #fff7d7;
   font-family: var(--mono);
@@ -657,6 +737,14 @@ body:has(.tycoon-shell) {
   font-weight: 800;
   line-height: 1.2;
   text-transform: uppercase;
+}
+.building-status > i {
+  width: 4px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.65;
 }
 .health-healthy .building-status {
   background: #d8f0c6;
@@ -1536,6 +1624,7 @@ body:has(.tycoon-shell) {
     animation: none;
   }
   .park-building,
+  .building-selection-ring,
   .connection-handle,
   .inspector-accordion-trigger svg,
   .inspector-config .inspector-check input::after {

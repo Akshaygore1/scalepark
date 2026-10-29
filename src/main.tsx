@@ -8,6 +8,7 @@ import { RouterProvider } from "react-router";
 
 import "./styles/base.css";
 import "./styles/menu.css";
+import "./styles/landing.css";
 import "./styles/game.css";
 import "./styles/dialogs.css";
 import "./styles/review.css";

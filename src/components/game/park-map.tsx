@@ -12,6 +12,7 @@ import {
 } from "@/lib/model";
 import type { Health, Snapshot } from "@/lib/simulation";
 
+import { BuildingArt } from "./building-art";
 import { buildingLook } from "./buildings";
 
 const BUILDING_WIDTH = 110;
@@ -423,7 +424,7 @@ function Building({
   onConnectorPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onMove: (nodeId: string, position: { x: number; y: number }) => void;
 }) {
-  const { icon: Icon, color } = buildingLook[node.type];
+  const { color } = buildingLook[node.type];
   const drag = useRef<{ pointerId: number; x: number; y: number; nodeX: number; nodeY: number; maxX: number; maxY: number; moved: boolean } | null>(null);
   const suppressClick = useRef(false);
   const [dragging, setDragging] = useState(false);
@@ -488,15 +489,8 @@ function Building({
           setDragging(false);
         }}
       >
-        <span className="building-status">{status}</span>
-        <span className="building-roof">
-          <Icon />
-        </span>
-        <span className="building-body">
-          <i />
-          <i />
-          <i />
-        </span>
+        <BuildingArt type={node.type} />
+        <span className="building-status"><i aria-hidden="true" />{status}</span>
         <span className="building-label">
           <b title={nodeLabel(node)}>{nodeLabel(node)}</b>
           {subtitle && <small>{subtitle}</small>}
