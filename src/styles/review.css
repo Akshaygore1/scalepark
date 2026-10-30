@@ -1,15 +1,14 @@
 .review-overlay {
   z-index: 120;
-  padding: 18px;
+  padding: 24px;
 }
 .run-review {
-  width: min(1320px, 100%);
-  max-height: calc(100svh - 36px);
+  width: min(1120px, 100%);
+  max-height: calc(100svh - 48px);
   overflow-y: auto;
-  border: 3px solid var(--park-line);
-  border-radius: 22px;
+  border: 1px solid var(--park-line);
+  border-radius: 6px;
   background: var(--park-cream);
-  box-shadow: 0 12px 0 rgba(20, 39, 33, 0.5);
 }
 .run-review-header {
   display: flex;
@@ -18,31 +17,31 @@
   gap: 20px;
   padding: 22px 26px 18px;
   border-bottom: 1px solid #d4d5c3;
-  background: #fff4d0;
+  background: var(--park-cream);
 }
 .review-kicker,
 .review-card-kicker {
   display: block;
   color: #27635a;
   font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .run-review-header h2 {
   margin: 4px 0 5px;
   font-family: var(--park-display);
-  font-size: clamp(30px, 4vw, 46px);
-  font-weight: 800;
-  letter-spacing: -0.04em;
-  line-height: 1;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 30px;
 }
 .run-review-header p {
-  max-width: 72ch;
+  max-width: 65ch;
   color: var(--park-soft);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 400;
   line-height: 1.45;
 }
 .review-close {
@@ -52,8 +51,8 @@
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid #c7cdb8;
-  border-radius: 9px;
-  background: white;
+  border-radius: 4px;
+  background: var(--park-paper);
 }
 .review-close svg {
   width: 18px;
@@ -61,7 +60,7 @@
 .review-timeline {
   padding: 17px 26px 12px;
   border-bottom: 1px solid #d4d5c3;
-  background: rgba(255, 253, 245, 0.8);
+  background: var(--park-cream);
 }
 .review-timeline-heading,
 .review-timeline-scale,
@@ -79,8 +78,8 @@
 .review-timeline-scale,
 .review-empty {
   color: var(--park-soft);
-  font-size: 10px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 400;
 }
 .review-scrubber {
   position: relative;
@@ -108,7 +107,7 @@
   height: 30px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
+  border-radius: 4px;
   translate: -50% 0;
   pointer-events: auto;
 }
@@ -117,7 +116,7 @@
   width: 9px;
   height: 9px;
   display: block;
-  border: 2px solid var(--park-line);
+  border: 1px solid var(--park-line);
   border-radius: 3px;
   background: var(--park-coral);
   rotate: 45deg;
@@ -141,7 +140,7 @@
 }
 .review-timeline-scale {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 12px;
 }
 .review-marker-legend {
   display: flex;
@@ -155,9 +154,9 @@
   gap: 5px;
   color: var(--park-soft);
   font-family: var(--mono);
-  font-size: 8px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
 }
 .review-marker-legend i {
   width: 7px;
@@ -182,26 +181,26 @@
   gap: 4px;
   padding: 10px;
   border: 1px solid #cbd2c5;
-  border-radius: 10px;
-  background: white;
+  border-radius: 4px;
+  background: var(--park-paper);
   text-align: left;
 }
 .review-chart-card:hover,
 .review-chart-card.selected {
   border-color: var(--park-line);
-  box-shadow: inset 0 -3px 0 var(--park-yellow);
+  background: #fffbe6;
 }
 .review-chart-card > span {
   overflow: hidden;
   color: var(--park-soft);
-  font-size: 9px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .review-chart-card > b {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 18px;
 }
 .review-chart-card svg {
   width: 100%;
@@ -222,10 +221,15 @@
   stroke-width: 1;
   stroke-dasharray: 2 2;
 }
+.review-table-scroll {
+  max-width: 100%;
+  margin-top: 18px;
+  overflow-x: auto;
+}
 .review-nodes {
   width: 100%;
-  margin-top: 14px;
-  font-size: 10.5px;
+  min-width: 560px;
+  font-size: 13px;
 }
 .review-nodes th,
 .review-nodes td {
@@ -241,15 +245,15 @@
 .review-nodes thead th {
   color: var(--park-soft);
   font-family: var(--mono);
-  font-size: 8.5px;
-  text-transform: uppercase;
+  font-size: 12px;
+  text-transform: none;
 }
 .review-nodes tbody th {
-  font-weight: 800;
+  font-weight: 600;
 }
 .review-nodes td {
   font-family: var(--mono);
-  font-weight: 700;
+  font-weight: 600;
 }
 .review-nodes td:last-child {
   font-family: var(--park-body);
@@ -259,13 +263,13 @@
   display: inline-block;
   margin-right: 4px;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 3px;
   background: #d8f0c6;
   color: var(--park-ink);
   font-family: var(--mono);
-  font-size: 8px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
 }
 .state-busy .review-state {
   background: var(--park-yellow);
@@ -282,7 +286,7 @@
   min-width: 0;
   padding: 18px 17px 22px;
   border-left: 1px solid #d4d5c3;
-  background: #fff7df;
+  background: var(--park-cream);
 }
 .review-panel-heading strong {
   font-family: var(--mono);
@@ -299,22 +303,22 @@
   justify-content: space-between;
   gap: 9px;
   padding-bottom: 6px;
-  border-bottom: 1px dashed #cbd2c5;
+  border-bottom: 1px solid #d9d7c5;
 }
 .review-selected-stats small {
   color: var(--park-soft);
-  font-size: 9.5px;
-  font-weight: 750;
+  font-size: 12px;
+  font-weight: 600;
 }
 .review-selected-stats b {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 12px;
   text-align: right;
 }
 .review-events-panel h3 {
   font-family: var(--park-display);
   font-size: 17px;
-  font-weight: 800;
+  font-weight: 600;
 }
 .review-event-list {
   display: grid;
@@ -342,13 +346,13 @@
 .review-event-list li b {
   color: #27635a;
   font-family: var(--mono);
-  font-size: 8px;
-  text-transform: uppercase;
+  font-size: 11px;
+  text-transform: none;
 }
 .review-event-list li span {
   color: #594f42;
-  font-size: 10.5px;
-  font-weight: 650;
+  font-size: 13px;
+  font-weight: 400;
   line-height: 1.35;
 }
 .review-empty {
@@ -370,6 +374,8 @@
     align-items: start;
     padding: 12px;
   }
+  .run-review { max-height: calc(100svh - 24px); }
+  .run-review-header h2 { font-size: 22px; line-height: 28px; }
   .run-review-header,
   .review-timeline,
   .review-main-column {

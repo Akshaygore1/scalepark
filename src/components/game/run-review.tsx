@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { formatClock } from "@/lib/evaluate";
 import type { SimEvent, SimulationResult, Snapshot } from "@/lib/simulation";
 
+import { DialogOverlay } from "./dialogs";
+
 const metrics = [
   { key: "demand", label: "Traffic", format: (value: number) => `${Math.round(value).toLocaleString()} req/s`, read: (s: Snapshot) => s.demand },
   { key: "availability", label: "Availability", format: (value: number) => `${value.toFixed(2)}%`, read: (s: Snapshot) => s.availability * 100 },
@@ -36,7 +38,6 @@ export function RunReview({
   const atSecond = result.events.filter((event) => event.second === current?.second);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
       if (event.key === "ArrowLeft") onSeek(Math.max(0, second - 1));
       if (event.key === "ArrowRight") onSeek(Math.min(last, second + 1));
     };
@@ -45,13 +46,13 @@ export function RunReview({
   }, [last, onClose, onSeek, second]);
   if (!current) return null;
   return (
-    <div className="game-overlay review-overlay">
-      <section className="run-review" role="dialog" aria-modal="true" aria-labelledby="run-review-title">
+    <DialogOverlay label="Run review" onEscape={onClose} className="review-overlay">
+      <section className="run-review" aria-labelledby="run-review-title">
         <header className="run-review-header">
           <div>
-            <span className="review-kicker">Replay · every run is deterministic</span>
-            <h2 id="run-review-title">Run Review</h2>
-            <p>Scrub through the run to see when each building ran out of headroom and what followed. Use the arrow keys to step one second at a time.</p>
+            <span className="review-kicker">Run details</span>
+            <h2 id="run-review-title">Run review</h2>
+            <p>Select a second to inspect traffic, capacity, and events. Use the arrow keys to move through the run.</p>
           </div>
           <button className="review-close" type="button" onClick={onClose} aria-label="Close run review">
             <X />
@@ -121,32 +122,34 @@ export function RunReview({
                 />
               ))}
             </div>
-            <table className="review-nodes">
-              <thead>
-                <tr>
-                  <th>Building</th>
-                  <th>Load</th>
-                  <th>Capacity</th>
-                  <th>Busy</th>
-                  <th>State</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(current.nodes)
-                  .filter(([id]) => labels.has(id))
-                  .map(([id, node]) => (
-                    <tr key={id} className={`state-${node.health}`}>
-                      <th scope="row">{labels.get(id)}</th>
-                      <td>{node.load.toLocaleString()}</td>
-                      <td>{Number.isFinite(node.capacity) ? node.capacity.toLocaleString() : "∞"}</td>
-                      <td>{Number.isFinite(node.capacity) ? `${Math.round(Math.min(9.99, node.utilization) * 100)}%` : "-"}</td>
-                      <td>
-                        <span className="review-state">{node.health === "saturated" ? "overloaded" : node.health}</span> {node.detail}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
+            <div className="review-table-scroll" tabIndex={0} role="region" aria-label="Building metrics">
+              <table className="review-nodes">
+                <thead>
+                  <tr>
+                    <th>Building</th>
+                    <th>Load</th>
+                    <th>Capacity</th>
+                    <th>Busy</th>
+                    <th>State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(current.nodes)
+                    .filter(([id]) => labels.has(id))
+                    .map(([id, node]) => (
+                      <tr key={id} className={`state-${node.health}`}>
+                        <th scope="row">{labels.get(id)}</th>
+                        <td>{node.load.toLocaleString()}</td>
+                        <td>{Number.isFinite(node.capacity) ? node.capacity.toLocaleString() : "∞"}</td>
+                        <td>{Number.isFinite(node.capacity) ? `${Math.round(Math.min(9.99, node.utilization) * 100)}%` : "-"}</td>
+                        <td>
+                          <span className="review-state">{node.health === "saturated" ? "overloaded" : node.health}</span> {node.detail}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <aside className="review-events-panel" aria-label="Events at the selected second">
@@ -184,7 +187,7 @@ export function RunReview({
           </aside>
         </div>
       </section>
-    </div>
+    </DialogOverlay>
   );
 }
 

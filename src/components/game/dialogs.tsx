@@ -1,4 +1,4 @@
-import { Activity, ArrowRight, BookOpen, CircleCheck, CircleX, Map as MapIcon, RotateCcw, Star, Users, Wrench, X } from "lucide-react";
+import { Activity, ArrowRight, BookOpen, CircleCheck, CircleX, Map as MapIcon, RotateCcw, Star, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { curriculum, type Lesson, type QuizStep } from "@/lib/curriculum";
@@ -8,47 +8,81 @@ import type { Progress } from "@/lib/progress";
 import { formatMoney } from "./buildings";
 import type { Prediction } from "./game-state";
 
-function Overlay({ children, label, onEscape }: { children: ReactNode; label: string; onEscape?: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
+export function DialogOverlay({ children, label, onEscape, className = "" }: {
+  children: ReactNode;
+  label: string;
+  onEscape?: () => void;
+  className?: string;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    ref.current?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
-  }, []);
-  useEffect(() => {
-    if (!onEscape) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onEscape();
+    const dialog = ref.current;
+    if (!dialog) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialog.showModal();
+    const heading = dialog.querySelector<HTMLElement>("h2");
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+    return () => {
+      dialog.close();
+      document.body.style.overflow = overflow;
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onEscape]);
+  }, []);
   return (
-    <div className="game-overlay" ref={ref}>
-      <section className="dialog-frame" role="dialog" aria-modal="true" aria-label={label}>
-        {children}
-      </section>
-    </div>
+    <dialog
+      className={`game-overlay ${className}`}
+      ref={ref}
+      aria-label={label}
+      onKeyDown={(event) => {
+        if (event.key === "Tab") {
+          const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+            'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]',
+          )).filter((element) => element.getClientRects().length > 0);
+          const first = focusable[0];
+          const last = focusable.at(-1);
+          const active = document.activeElement as HTMLElement;
+          if (first && last && (!focusable.includes(active) || (event.shiftKey ? active === first : active === last))) {
+            event.preventDefault();
+            (event.shiftKey ? last : first).focus();
+          }
+          return;
+        }
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onEscape?.();
+      }}
+      onCancel={(event) => {
+        event.preventDefault();
+        onEscape?.();
+      }}
+      onClose={(event) => {
+        const dialog = event.currentTarget;
+        if (!dialog.isConnected || dialog.open) return;
+        if (onEscape) onEscape();
+        else dialog.showModal();
+      }}
+    >
+      <div className="dialog-frame">{children}</div>
+    </dialog>
   );
 }
 
 function CoachFrame({ kicker, progress, children, actions }: { kicker: string; progress?: { current: number; total: number }; children: ReactNode; actions: ReactNode }) {
   return (
     <div className="advisor-dialog">
-      <div className="advisor-character" aria-hidden="true">
-        <span>!</span>
-        <Users />
-      </div>
       <div className="advisor-copy">
         <header className="advisor-header">
           <span className="advisor-label">{kicker}</span>
           {progress && progress.total > 1 && (
-            <div className="advisor-progress" role="progressbar" aria-valuemin={1} aria-valuemax={progress.total} aria-valuenow={progress.current} aria-valuetext={`${progress.current} of ${progress.total}`}>
+            <div className="advisor-progress" role="progressbar" aria-label="Progress" aria-valuemin={1} aria-valuemax={progress.total} aria-valuenow={progress.current} aria-valuetext={`${progress.current} of ${progress.total}`}>
               <span className="advisor-progress-label">
                 {progress.current} of {progress.total}
-              </span>
-              <span className="advisor-progress-track" aria-hidden="true">
-                {Array.from({ length: progress.total }, (_, index) => (
-                  <i key={index} className={index < progress.current ? "complete" : undefined} />
-                ))}
               </span>
             </div>
           )}
@@ -62,9 +96,9 @@ function CoachFrame({ kicker, progress, children, actions }: { kicker: string; p
 
 export function RefresherDialog({ lesson, step, total, onNext }: { lesson: Lesson; step: number; total: number; onNext: () => void }) {
   return (
-    <Overlay label={lesson.title}>
+    <DialogOverlay label={lesson.title}>
       <CoachFrame
-        kicker="Mina · Systems coach"
+        kicker="Lesson"
         progress={{ current: step + 1, total }}
         actions={
           <button type="button" onClick={onNext}>
@@ -75,15 +109,12 @@ export function RefresherDialog({ lesson, step, total, onNext }: { lesson: Lesso
       >
         <h2>{lesson.title}</h2>
         <p>{lesson.body}</p>
-        <aside className="advisor-detail" aria-label="Coach's note">
-          <BookOpen aria-hidden="true" />
-          <div>
-            <strong>Coach's note</strong>
-            <p>{lesson.note}</p>
-          </div>
+        <aside className="advisor-detail" aria-label="Key idea">
+          <strong>Key idea</strong>
+          <p>{lesson.note}</p>
         </aside>
       </CoachFrame>
-    </Overlay>
+    </DialogOverlay>
   );
 }
 
@@ -120,7 +151,7 @@ export function QuizDialog({
     setTried(new Set());
   };
   return (
-    <Overlay label={title}>
+    <DialogOverlay label={title}>
       <CoachFrame
         kicker={title}
         progress={{ current: index + 1, total: steps.length }}
@@ -134,16 +165,18 @@ export function QuizDialog({
         <h2 className="quiz-prompt">{step.prompt}</h2>
         {step.context && <p className="quiz-context">“{step.context}”</p>}
         {step.table && (
-          <table className="quiz-table">
-            <thead>
-              <tr>{step.table.headers.map((header) => <th key={header}>{header}</th>)}</tr>
-            </thead>
-            <tbody>
-              {step.table.rows.map((row) => (
-                <tr key={row[0]}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="dialog-table-scroll" tabIndex={0} role="region" aria-label="Question data">
+            <table className="quiz-table">
+              <thead>
+                <tr>{step.table.headers.map((header) => <th key={header}>{header}</th>)}</tr>
+              </thead>
+              <tbody>
+                {step.table.rows.map((row) => (
+                  <tr key={row[0]}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         <div className="quiz-options" role="group" aria-label="Answers">
           {step.options.map((option, optionIndex) => {
@@ -169,7 +202,7 @@ export function QuizDialog({
           </p>
         )}
       </CoachFrame>
-    </Overlay>
+    </DialogOverlay>
   );
 }
 
@@ -181,9 +214,9 @@ export function PredictionDialog({
   onPredict: (prediction: Prediction) => void;
 }) {
   return (
-    <Overlay label="Make a prediction">
+    <DialogOverlay label="Make a prediction">
       <CoachFrame
-        kicker="Before the run · make a prediction"
+        kicker="Before the run"
         actions={
           <button type="button" onClick={() => onPredict("none")}>
             Nothing will break
@@ -192,7 +225,7 @@ export function PredictionDialog({
         }
       >
         <h2>What breaks first?</h2>
-        <p>Guessing before you look makes the answer stick. Which building will run out of headroom first?</p>
+        <p>Which building will run out of headroom first?</p>
         <div className="quiz-options prediction-options" role="group" aria-label="Buildings">
           {options.map((option) => (
             <button className="quiz-option" key={option.id} type="button" onClick={() => onPredict(option.id)}>
@@ -202,7 +235,7 @@ export function PredictionDialog({
           ))}
         </div>
       </CoachFrame>
-    </Overlay>
+    </DialogOverlay>
   );
 }
 
@@ -232,11 +265,11 @@ export function OutcomeDialog({
   const won = outcome.passed;
   const guessedRight = prediction !== null && (prediction === "none" ? !firstSaturated : prediction === firstSaturated);
   return (
-    <Overlay label={won ? "Level complete" : "Run finished"} onEscape={onEdit}>
+    <DialogOverlay label={won ? "Level complete" : "Run finished"} onEscape={onEdit}>
       <div className={`outcome-dialog ${won ? "won" : "lost"}`}>
-        <span className="outcome-icon">{won ? "★" : isSandbox ? "i" : "!"}</span>
-        <span className="outcome-label">{isSandbox ? "Run finished" : won ? "Level complete" : "Not yet"}</span>
-        <h2>{isSandbox ? "Here is how the park held up." : won ? "The links stayed alive." : "The park missed a target."}</h2>
+        <button className="dialog-close" type="button" onClick={onEdit} aria-label="Close run results"><X /></button>
+        <span className="outcome-label">Run results</span>
+        <h2>{isSandbox ? "Run complete" : won ? "Level complete" : "Targets missed"}</h2>
         {won && !isSandbox && (
           <div className="outcome-stars" aria-label={`${outcome.stars} of 3 stars`}>
             {[1, 2, 3].map((star) => (
@@ -251,27 +284,29 @@ export function OutcomeDialog({
           </p>
         )}
         {outcome.targets.length > 0 && (
-          <table className="outcome-targets">
-            <thead>
-              <tr>
-                <th>Target</th>
-                <th>Goal</th>
-                <th>Result</th>
-              </tr>
-            </thead>
-            <tbody>
-              {outcome.targets.map((item) => (
-                <tr key={item.label} className={item.pass ? "pass" : "fail"}>
-                  <th scope="row">
-                    {item.pass ? <CircleCheck /> : <CircleX />}
-                    {item.label}
-                  </th>
-                  <td>{item.goal}</td>
-                  <td>{item.measured}</td>
+          <div className="dialog-table-scroll" tabIndex={0} role="region" aria-label="Run targets">
+            <table className="outcome-targets">
+              <thead>
+                <tr>
+                  <th>Target</th>
+                  <th>Goal</th>
+                  <th>Result</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {outcome.targets.map((item) => (
+                  <tr key={item.label} className={item.pass ? "pass" : "fail"}>
+                    <th scope="row">
+                      {item.pass ? <CircleCheck /> : <CircleX />}
+                      {item.label}
+                    </th>
+                    <td>{item.goal}</td>
+                    <td>{item.measured}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         {outcome.score && (
           <div className="score-summary">
@@ -295,11 +330,11 @@ export function OutcomeDialog({
             <Activity /> Run review
           </button>
           {won && hasNext && !isSandbox ? (
-            <button type="button" onClick={onNext}>
+            <button className="dialog-primary" type="button" onClick={onNext}>
               Next level <ArrowRight />
             </button>
           ) : (
-            <button type="button" onClick={onEdit}>
+            <button className="dialog-primary" type="button" onClick={onEdit}>
               {isSandbox ? <Wrench /> : <RotateCcw />} {isSandbox ? "Keep building" : "Revise the park"}
             </button>
           )}
@@ -316,7 +351,7 @@ export function OutcomeDialog({
           </button>
         </div>
       </div>
-    </Overlay>
+    </DialogOverlay>
   );
 }
 
@@ -327,12 +362,12 @@ export function JournalDialog({ progress, onClose }: { progress: Progress; onClo
       .map((level) => ({ module, level })),
   );
   return (
-    <Overlay label="System design journal" onEscape={onClose}>
+    <DialogOverlay label="System design journal" onEscape={onClose}>
       <div className="journal">
-        <button type="button" onClick={onClose} aria-label="Close journal">
+        <button className="dialog-close" type="button" onClick={onClose} aria-label="Close journal">
           <X />
         </button>
-        <span className="journal-label">Field notes</span>
+        <span className="journal-label">Journal</span>
         <h2>System design journal</h2>
         {entries.length ? (
           entries.map(({ module, level }) => (
@@ -352,6 +387,6 @@ export function JournalDialog({ progress, onClose }: { progress: Progress; onClo
           </div>
         )}
       </div>
-    </Overlay>
+    </DialogOverlay>
   );
 }
